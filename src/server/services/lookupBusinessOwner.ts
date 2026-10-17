@@ -16,7 +16,14 @@ import {
 } from '../lib/stateOwners/sos/index.js';
 import { defaultLookupContext } from '../lib/stateOwners/sos/context.js';
 import { mapPool } from '../lib/stateOwners/sos/pool.js';
-import { APIFY_USD_PER_BLOCKED_LOOKUP, CA_APIFY_LOOKUPS_PER_ROW } from '../lib/stateOwners/sos/spend.js';
+import {
+  APIFY_USD_PER_BLOCKED_LOOKUP,
+  CA_APIFY_LOOKUPS_PER_ROW,
+  SERPER_QUERIES_PER_ROW,
+  SERPER_USD_PER_QUERY,
+  estimateSerperCredits,
+  estimateSerperUsd,
+} from '../lib/stateOwners/sos/spend.js';
 import { isWaterfallReady } from '../lib/stateOwners/sos/waterfall.js';
 
 export { APIFY_USD_PER_BLOCKED_LOOKUP };
@@ -93,6 +100,12 @@ export function firstUseEnvelope(): Record<string, unknown> {
     other_apify_mid_if_all_blocked_usd: Number((other * APIFY_USD_PER_BLOCKED_LOOKUP).toFixed(2)),
     runtime_seconds_ca_direct: estimateRuntimeSeconds(ca),
     apify_usd_per_blocked_lookup: APIFY_USD_PER_BLOCKED_LOOKUP,
+    serper_queries_per_row: SERPER_QUERIES_PER_ROW,
+    serper_usd_per_query: SERPER_USD_PER_QUERY,
+    serper_credits: estimateSerperCredits(FIRST_USE_ASSUMED_TOTAL),
+    serper_usd: estimateSerperUsd(FIRST_USE_ASSUMED_TOTAL),
+    serper_note:
+      'Serper-first (google.serper.dev, SERPER_API_KEY): 2 queries/row. Apify Playwright is only the fallback when Serper does not return a high-confidence owner, behind APIFY_MAX_USD.',
     ca_note:
       'calicodev/calico developer API is government-agencies-only. Public bizfileOnline + SI; Apify Playwright + residential when Incapsula/Imperva blocks datacenter IPs.',
   };
@@ -107,6 +120,7 @@ function namelessSample(result: NameLookupResult): BusinessOwnerNamelessSample {
     people_count: result.people.length,
     waterfall_ready: result.people.some((p) => isWaterfallReady(p)),
     via_apify: result.via_apify,
+    via_serper: result.via_serper,
     ocr_used: result.ocr_used,
   };
 }
@@ -116,7 +130,14 @@ function capRows(rows: NameLookupInput[], maxRows?: number): NameLookupInput[] {
   return rows.slice(0, cap);
 }
 
-function emptySnapshot(jobId: string, opts: LookupBusinessOwnerOpts, remaining: number, estimateUsd: number): BusinessOwnerJobSnapshot {
+function emptySnapshot(
+  jobId: string,
+  opts: LookupBusinessOwnerOpts,
+  remaining: number,
+  estimateUsd: number,
+  serperCredits = 0,
+  serperUsd = 0,
+): BusinessOwnerJobSnapshot {
   return {
     job_id: jobId,
     status: 'queued',
@@ -130,6 +151,11 @@ function emptySnapshot(jobId: string, opts: LookupBusinessOwnerOpts, remaining: 
     apify_estimate_usd: estimateUsd,
     apify_usd_spent: 0,
     via_apify: 0,
+    serper_estimate_credits: serperCredits,
+    serper_estimate_usd: serperUsd,
+    serper_credits: 0,
+    serper_usd: 0,
+    via_serper: 0,
     ocr_used: 0,
     writes_enabled: WRITES_ENABLED,
     phase: OWNER_LOOKUP_PHASE,
@@ -170,12 +196,19 @@ async function runLookupJob(
       if (named) snapshot.named += 1;
       if (result.coverage_reason === 'agent_only') snapshot.agent_only += 1;
       if (result.via_apify) snapshot.via_apify += 1;
+      if (result.via_serper || (result.serper_credits || 0) > 0) snapshot.via_serper += 1;
       if (result.ocr_used) snapshot.ocr_used += 1;
       snapshot.apify_usd_spent = Number((snapshot.apify_usd_spent + (result.apify_usd || 0)).toFixed(4));
+      snapshot.serper_credits += result.serper_credits || 0;
+      snapshot.serper_usd = Number((snapshot.serper_usd + (result.serper_usd || 0)).toFixed(4));
       if (samples.length < 10) samples.push(namelessSample(result));
     }
     snapshot.sample = samples;
     snapshot.apify_usd_spent = Number((ctx.spend?.usd ?? snapshot.apify_usd_spent).toFixed(2));
+    if (ctx.serper) {
+      snapshot.serper_credits = ctx.serper.credits;
+      snapshot.serper_usd = ctx.serper.usd;
+    }
     snapshot.remaining = 0;
     snapshot.status = 'completed';
     snapshot.finished_at = new Date().toISOString();
@@ -200,8 +233,11 @@ export async function lookupBusinessOwner(opts: LookupBusinessOwnerOpts): Promis
   const rows = capRows(filtered, opts.max_rows);
 
   if (estimateOnly) {
+    const n = rows.length || FIRST_USE_ASSUMED_TOTAL;
     const apifyUsd = rows.length ? estimateApifyUsd(rows) : 0;
-    const snapshot = emptySnapshot(jobId, opts, 0, apifyUsd);
+    const serperCredits = estimateSerperCredits(n);
+    const serperUsd = estimateSerperUsd(n);
+    const snapshot = emptySnapshot(jobId, opts, 0, apifyUsd, serperCredits, serperUsd);
     snapshot.status = 'completed';
     snapshot.estimate_only = true;
     snapshot.processed = 0;
@@ -220,13 +256,14 @@ export async function lookupBusinessOwner(opts: LookupBusinessOwnerOpts): Promis
       first_use: firstUseEnvelope(),
       writes_enabled: WRITES_ENABLED,
       josh_signup: [
+        'Set SERPER_API_KEY (google.serper.dev). Serper is the first owner tier for every state — much cheaper than Apify.',
         'Do not sign up at calicodev.sos.ca.gov — the developer API is government-agencies-only',
-        'Confirm Apify CU + residential GB (bizfileOnline Incapsula/Imperva blocks datacenter IPs; APIFY_TOKEN). Set APIFY_MAX_USD as a hard cap.',
+        'Confirm Apify CU + residential GB as fallback only (APIFY_TOKEN). Set APIFY_MAX_USD as a hard cap. Apify runs only when Serper does not return a high-confidence owner.',
         'Optional: CA weekly bulk if it includes Statement of Information officers',
         'Illinois Data Transparency Act bulk zips auto-download from ilsos.gov/data/bs (or set IL_DTA_DIR). Search UI scrape is forbidden; missing files are no_source.',
       ],
       assistant_instructions:
-        'Phase 2 estimate only. No SOS calls. No writes. Do not dump company names. Show counts, $ envelope, and Apify vs IL-file setup. CA has no API key (calicodev is government-only).',
+        'Phase 2 estimate only. No SOS calls. No writes. Do not dump company names. Show Serper credits/$, Apify fallback envelope, and IL-file setup. CA has no API key (calicodev is government-only).',
     };
   }
 
@@ -250,7 +287,14 @@ export async function lookupBusinessOwner(opts: LookupBusinessOwnerOpts): Promis
     };
   }
 
-  const snapshot = emptySnapshot(jobId, { ...opts, dry_run: dryRun }, rows.length, estimateApifyUsd(rows));
+  const snapshot = emptySnapshot(
+    jobId,
+    { ...opts, dry_run: dryRun },
+    rows.length,
+    estimateApifyUsd(rows),
+    estimateSerperCredits(rows.length),
+    estimateSerperUsd(rows.length),
+  );
   snapshot.status = 'running';
   putJob(snapshot);
 

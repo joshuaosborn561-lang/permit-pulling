@@ -109,7 +109,7 @@ Call \`permitstack_estimate_credits\` (alias \`shovels_estimate_credits\`, or \`
 | match_texas_officers | No | Comptroller PIR officers (TX entities) |
 | match_florida_officers | No | Sunbiz officers (FL entities; optional key if Cloudflare blocks) |
 | match_state_owners | No | State board owners (CSLB, L&I, NYC DOB, NY DOS, MA CSL+SOS, MN DLI, PA DOS, TDLR). Counts only. |
-| lookup_business_owner | No writes | Company+city+state owner lookup (CA bizfileOnline+SI, IL DTA, GA/NC/AZ HTML, OH/CO agent-only). estimate_only / batch / job status. |
+| lookup_business_owner | No writes | Company+city+state owner lookup. Serper-first (all states), then SOS; Apify only if Serper misses (APIFY_MAX_USD). estimate_only / batch / job status. |
 | get_business_owner_job | No | Status for lookup_business_owner. Counts only. |
 | recompute_officer_dial_status | No | Restore dial_status from stored officers (no registry calls) |
 | lookup_line_type | ~$2.40/1k | Veriphone mobile vs landline |

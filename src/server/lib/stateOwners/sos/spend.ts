@@ -3,6 +3,10 @@ export const APIFY_USD_PER_BLOCKED_LOOKUP = 0.015;
 export const APIFY_USD_PER_COMPUTE_UNIT = 0.2;
 /** CA search + SI may each need Playwright when Incapsula blocks datacenter IPs. */
 export const CA_APIFY_LOOKUPS_PER_ROW = 1.5;
+/** google.serper.dev search. One credit per query; Josh prefers this over Apify. */
+export const SERPER_USD_PER_QUERY = 0.001;
+/** Generic officer query + one site-targeted query (OpenCorporates / Bizapedia / SOS). */
+export const SERPER_QUERIES_PER_ROW = 2;
 
 export function apifyMaxUsdFromEnv(): number | null {
   const raw = process.env.APIFY_MAX_USD?.trim();
@@ -45,6 +49,38 @@ export class ApifySpendTracker {
       apify_compute_units: Number(this.computeUnits.toFixed(4)),
     };
   }
+}
+
+export class SerperCreditTracker {
+  credits = 0;
+  queries = 0;
+
+  add(credits = 1): void {
+    const n = Number(credits) || 0;
+    if (n <= 0) return;
+    this.credits += n;
+    this.queries += 1;
+  }
+
+  get usd(): number {
+    return Number((this.credits * SERPER_USD_PER_QUERY).toFixed(4));
+  }
+
+  snapshot(): { serper_credits: number; serper_queries: number; serper_usd: number } {
+    return {
+      serper_credits: this.credits,
+      serper_queries: this.queries,
+      serper_usd: this.usd,
+    };
+  }
+}
+
+export function estimateSerperCredits(rowCount: number): number {
+  return Math.max(0, rowCount) * SERPER_QUERIES_PER_ROW;
+}
+
+export function estimateSerperUsd(rowCount: number): number {
+  return Number((estimateSerperCredits(rowCount) * SERPER_USD_PER_QUERY).toFixed(4));
 }
 
 export function usdFromApifyRun(

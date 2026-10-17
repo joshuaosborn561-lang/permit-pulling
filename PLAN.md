@@ -18,10 +18,10 @@ No lead names, company names from the first-use file, or officer names appear he
 
 **Hard rules.**
 
-- Official Secretary of State / Corporation Commission / equivalent sources only.
-- Apify is **fallback HTML fetch** for states that block automation. Never paid Store datasets, never SOSfinder / OpenSOSData / Parse.bot / similar wrappers.
+- Official Secretary of State / Corporation Commission / equivalent sources only for the SOS tier. **Serper (google.serper.dev) is the first owner tier for every state** — cheaper than Apify. A Serper person is accepted only when the organic snippet/page fuzzy-matches the same company name **and** city or state.
+- Apify is **fallback HTML fetch** after Serper cannot return a high-confidence owner, for states that block automation, behind `APIFY_MAX_USD`. Never paid Store datasets, never SOSfinder / OpenSOSData / Parse.bot / similar wrappers.
 - A blocked/challenge page (Cloudflare “Just a moment”, “Enable JavaScript and cookies”, Incapsula interstitial) is **never** a match and is never parsed for officers.
-- No person is waterfall-ready without a confirmed company record from the official source. Do not match the input name against itself.
+- No person is waterfall-ready without a confirmed company record. Serper hits are waterfall-ready only at **high** confidence. Do not match the input name against itself.
 - Do not treat a registered agent as an owner. Agent-only hits are `coverage_reason=agent_only`, confidence `low`, and are **not** handed to Email Finder.
 - MCP replies stay counts / job ids / nameless samples. Persist people server-to-server.
 - First-use volume cited below is a **count only**.
@@ -44,14 +44,17 @@ Phase 2 may optionally fall `match_state_owners` through to the name path when `
 ## 3. Architecture (Phase 2 implements; this PR scaffolds)
 
 ```
-lookup_business_owner  ──► job store ──► per-state SOS adapter
-        │                                    │
-        │                                    ├─ official API / open-data / bulk file
-        │                                    ├─ official HTML (paced; existing PacedBoardClient)
-        │                                    └─ Apify playwright-scraper ONLY if blocked
-        ▼
+lookup_business_owner  ──► job store ──► Serper (all 51) ──► per-state SOS adapter
+        │                         │              │
+        │                         │              ├─ official API / open-data / bulk file
+        │                         │              ├─ official HTML (paced)
+        │                         │              └─ Apify playwright-scraper ONLY if
+        │                         │                 Serper missed AND page is blocked
+        ▼                         ▼
   counts + job_id          persist (later): first/last, title, company,
   get_business_owner_job   domain, source_url, confidence
+  serper_credits           waterfall_ready: official confirmed record,
+  apify_usd_spent          or Serper high confidence only
         │
         ▼
   Email Finder Waterfall (name_company)
@@ -84,7 +87,7 @@ New modules (scaffolded in this PR):
 | `dry_run` | Parse / count. No writes. Phase 1 default true; **writes are disabled in this PR**. |
 | `include_agents` | Default false. If true, still flagged `agent_only` and not waterfall-ready. |
 
-`get_business_owner_job({ job_id })` — `queued | running | completed | failed | stopped`, counters, per-state hit rates, nameless samples, Apify CU if any.
+`get_business_owner_job({ job_id })` — `queued | running | completed | failed | stopped`, counters, per-state hit rates, nameless samples, Serper credits, Apify CU if any.
 
 **Waterfall-compatible persist fields** (later writes; not dumped in chat):
 
@@ -315,7 +318,20 @@ Existing adapters in this repo are marked **HAVE**.
 
 ---
 
-## 8. Apify policy and cost
+## 8. Serper-first, then Apify fallback
+
+**Serper** (`SERPER_API_KEY`, `https://google.serper.dev/search`) runs first for **every** state, including jurisdictions without an SOS adapter yet.
+
+Queries (2 credits / row, **$0.001**/query):
+
+1. `<company> <city> <state> officer OR owner OR CEO OR president OR manager`
+2. Site-targeted: `site:opencorporates.com OR site:bizapedia.com OR site:<state SOS host> "<company>" …`
+
+Extract person + title from organic snippets. Accept only if the snippet fuzzy-matches the **same company name** and **city or state**. Record `source_url` and a 0–1 `confidence_score`. `waterfall_ready` only at **high** confidence (trusted host + strong company/geo). Challenge HTML in a snippet is never a match.
+
+**Apify** runs only when Serper does not return a high-confidence owner **and** official HTML is blocked, behind `APIFY_MAX_USD`.
+
+## 8.1 Apify policy and cost
 
 **Allowed:** `apify/playwright-scraper` (or `apify/web-scraper`) as pay-per-**usage** HTML fetch, `groups-RESIDENTIAL`, media download off, `maxConcurrency` 2–5, **batched startUrls per Actor run** (not one run per lookup). `waitForFinish=60` then poll the run until SUCCEEDED/FAILED. Hard cap `APIFY_MAX_USD` — refuse new runs at the cap. Refused / never-started / failed-with-no-usage runs are **$0**. Reuse existing `APIFY_PROXY_PASSWORD`.
 
@@ -353,6 +369,7 @@ calicodev developer API is **out**. Search and SI both go through public bizfile
 
 | Scenario | Apify $ | Wall clock | Owner names? |
 |----------|---------|------------|--------------|
+| Serper-first (2 queries/row, all states) | **$0** Apify; **~$31** Serper for 15,359 | Fast; no WAF | Yes, if high-confidence snippet |
 | A. Direct HTTP search + SI (no challenge) | **$0** | ~2–6 h @ 4 lanes | Yes, if SI present |
 | B. Typical: Incapsula blocks datacenter; Playwright + residential for search (and SI when images/JSON also block) | **~$290 mid** for ~13,050 (~1.5 × $0.015); range **~$200–$400** | ~20–40 h at conc 3 | Yes, if SI parses |
 | C. Worst: two full Playwright runs/row + image SI | **~$400–$750** | longer | Yes, if SI parses |
@@ -374,9 +391,10 @@ calicodev developer API is **out**. Search and SI both go through public bizfile
 
 **Planning envelope for the first 15,359 (not a bid):**
 
-- Best (CA weekly bulk **or** unchallenged bizfileOnline + IL files + no Apify): **~$0**, under a workday of compute.
-- Base (CA Incapsula → Playwright residential, ~1.5 lookups/row, plus a few hundred other blocked HTML rows): **~$200–$400** Apify, dominated by CA.
-- Bad (two Playwright runs per CA row + image SI + other blocked states): **~$400–$800**.
+- Serper-first (~2 credits/row × 15,359): **~$31** regardless of WAF. Apify only on Serper misses.
+- Best (CA weekly bulk **or** unchallenged bizfileOnline + IL files + no Apify): **~$0** Apify + Serper ~$31, under a workday of compute.
+- Base (CA Incapsula → Playwright residential, ~1.5 lookups/row, plus a few hundred other blocked HTML rows): **~$200–$400** Apify, dominated by CA, **if Serper misses**.
+- Bad (two Playwright runs per CA row + image SI + other blocked states): **~$400–$800** Apify fallback.
 - There is no $0 “CA API” line item. Do not sign up for calicodev.
 
 `estimate_only` on the real table should print this envelope with **actual** state counts before anyone enables writes.
@@ -389,12 +407,13 @@ calicodev developer API is **out**. Search and SI both go through public bizfile
 
 Required for CA name path at first-use volume:
 
-1. Confirm the existing **Apify** account (`APIFY_TOKEN` / `APIFY_PROXY_PASSWORD`) has **CU + residential GB** headroom. bizfileOnline Incapsula/Imperva blocks datacenter IPs; Playwright + `groups-RESIDENTIAL` is the fallback. Starter is enough for a 50-row probe; Scale only if the probe says most CA rows need Playwright.
+1. **Serper** `SERPER_API_KEY` on [google.serper.dev](https://google.serper.dev). First owner tier for all 51 jurisdictions. ~2 credits/row (~$0.002).
+2. Confirm the existing **Apify** account (`APIFY_TOKEN` / `APIFY_PROXY_PASSWORD`) has **CU + residential GB** headroom as **fallback** when Serper misses and bizfileOnline Incapsula/Imperva blocks datacenter IPs. Playwright + `groups-RESIDENTIAL`. Set `APIFY_MAX_USD`. Starter is enough for a 50-row probe.
 
 Optional, still official, still free or cheap:
 
-2. **CA weekly bulk / SOS data request** — ask whether the free weekly extract includes officer/SI names. If yes, first-use CA is a file join and Apify for CA goes to **$0**.
-3. **IL Data Transparency Act files** — download Annual Report + Assumed Names from [ilsos.gov/data/bus-serv-home.html](https://www.ilsos.gov/data/bus-serv-home.html). No key. Do not scrape the search app.
+3. **CA weekly bulk / SOS data request** — ask whether the free weekly extract includes officer/SI names. If yes, first-use CA is a file join and Apify for CA goes to **$0**.
+4. **IL Data Transparency Act files** — download Annual Report + Assumed Names from [ilsos.gov/data/bus-serv-home.html](https://www.ilsos.gov/data/bus-serv-home.html). No key. Do not scrape the search app.
 
 Already in this repo (do not rotate unless `health` says missing): PermitStack, optional Florida Sunbiz Daily `sb_` key, Texas Comptroller, Veriphone.
 
@@ -418,9 +437,10 @@ Already in this repo (do not rotate unless `health` says missing): PermitStack, 
 3. **GA / NC** official HTML, Apify fallback if blocked. Challenge pages are never parsed.
 4. **AZ** Business Center JSON API via browser/Apify; empty SPA shell is not a match.
 5. **OH** JSON entity confirm (`endPoints.json` + `NS_{query}_X`) or `no_source` / `blocked`. Never unverified `agent_only`. **CO** via keyless Socrata `4ykn-tg5h`. No Apify.
-6. MCP `lookup_business_owner` batch (`rows[]`, `max_rows` up to 5000), `estimate_only`, `wait`, `get_business_owner_job` status + per-state hit rates + `apify_usd_spent`. `APIFY_MAX_USD` hard cap.
-7. CLI `scripts/owner_lookup_sample.ts` — CSV in, results CSV + summary JSON (hit rate by state, officer vs agent-only, Apify $). No Supabase.
-8. Unit tests + recorded Cloudflare/Incapsula fixtures. Permit path (`match_state_owners` / CSLB license) stays green.
+6. MCP `lookup_business_owner` batch (`rows[]`, `max_rows` up to 5000), `estimate_only`, `wait`, `get_business_owner_job` status + per-state hit rates + `serper_credits` + `apify_usd_spent`. `APIFY_MAX_USD` hard cap.
+7. CLI `scripts/owner_lookup_sample.ts` — CSV in, results CSV + summary JSON (hit rate by state, officer vs agent-only, Serper credits, Apify $). No Supabase.
+8. **Serper-first** for all 51 jurisdictions (`SERPER_API_KEY`). High-confidence Google hits skip SOS/Apify. Apify only after a Serper miss on blocked HTML.
+9. Unit tests + recorded Cloudflare/Incapsula fixtures. Permit path (`match_state_owners` / CSLB license) stays green.
 
 Still later (not this PR): persist to Email Finder; `source_table` paging; remaining HAVE adapters (FL/TX/MA/PA/NY/WA/MN); optional `match_state_owners` fallback when `no_license_number`.
 
@@ -434,5 +454,6 @@ Still later (not this PR): persist to Email Finder; `source_table` paging; remai
 - OH [businesssearch.ohiosos.gov](https://businesssearch.ohiosos.gov/) (officer gap confirmed against public portal behavior)
 - NC SOS business registration search; AZ [arizonabusinesscenter.azcc.gov](https://arizonabusinesscenter.azcc.gov/businesssearch)
 - CO [data.colorado.gov 4ykn-tg5h](https://data.colorado.gov/Business/Business-Entities-in-Colorado/4ykn-tg5h); [COinfoMarket](https://www.coloradosos.gov/pubs/info_center/COinfoMarket.html)
+- Serper [google.serper.dev](https://google.serper.dev) (~$0.001/search)
 - Apify [pricing](https://apify.com/pricing), [CU estimation](https://help.apify.com/en/articles/3470975-how-to-estimate-compute-unit-usage-for-your-project)
 - Cross-check (not a substitute for official pages): Forage US registries audit, Oct 2026

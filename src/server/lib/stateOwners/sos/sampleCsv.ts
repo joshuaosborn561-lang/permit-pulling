@@ -77,8 +77,13 @@ export interface SampleResultLine {
   waterfall_ready: boolean;
   agent_only: boolean;
   via_apify: boolean;
+  via_serper: boolean;
   ocr_used: boolean;
   apify_usd: number;
+  serper_credits: number;
+  serper_usd: number;
+  confidence: string;
+  confidence_score: number;
   source_url: string;
 }
 
@@ -99,8 +104,13 @@ export function resultToCsvRow(input: NameLookupInput, result: NameLookupResult)
     waterfall_ready: Boolean(officer),
     agent_only: result.coverage_reason === 'agent_only',
     via_apify: Boolean(result.via_apify),
+    via_serper: Boolean(result.via_serper),
     ocr_used: Boolean(result.ocr_used),
     apify_usd: result.apify_usd || 0,
+    serper_credits: result.serper_credits || 0,
+    serper_usd: result.serper_usd || 0,
+    confidence: officer?.confidence || '',
+    confidence_score: officer?.confidence_score ?? 0,
     source_url: result.source_url || '',
   };
 }
@@ -120,8 +130,13 @@ export const SAMPLE_CSV_HEADERS = [
   'waterfall_ready',
   'agent_only',
   'via_apify',
+  'via_serper',
   'ocr_used',
   'apify_usd',
+  'serper_credits',
+  'serper_usd',
+  'confidence',
+  'confidence_score',
   'source_url',
 ] as const;
 
@@ -145,6 +160,9 @@ export interface SampleSummary {
   officer_vs_agent: { officer: number; agent_only: number };
   apify_usd_spent: number;
   via_apify: number;
+  serper_credits: number;
+  serper_usd: number;
+  via_serper: number;
   ocr_used: number;
 }
 
@@ -157,6 +175,9 @@ export function summarizeSample(rows: SampleResultLine[]): SampleSummary {
   let blocked = 0;
   let apify = 0;
   let via = 0;
+  let serperCredits = 0;
+  let serperUsd = 0;
+  let viaSerper = 0;
   let ocr = 0;
   for (const row of rows) {
     const st = row.state || 'UNK';
@@ -177,6 +198,9 @@ export function summarizeSample(rows: SampleResultLine[]): SampleSummary {
     if (row.coverage_reason === 'blocked') blocked += 1;
     apify += row.apify_usd || 0;
     if (row.via_apify) via += 1;
+    serperCredits += row.serper_credits || 0;
+    serperUsd += row.serper_usd || 0;
+    if (row.via_serper) viaSerper += 1;
     if (row.ocr_used) ocr += 1;
   }
   return {
@@ -191,6 +215,9 @@ export function summarizeSample(rows: SampleResultLine[]): SampleSummary {
     officer_vs_agent: { officer: named, agent_only },
     apify_usd_spent: Number(apify.toFixed(2)),
     via_apify: via,
+    serper_credits: serperCredits,
+    serper_usd: Number(serperUsd.toFixed(4)),
+    via_serper: viaSerper,
     ocr_used: ocr,
   };
 }

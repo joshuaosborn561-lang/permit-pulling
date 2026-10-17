@@ -66,6 +66,7 @@ export function isWaterfallReady(hit: WaterfallOwnerHit): boolean {
     return false;
   }
   if (!hit.source_url) return false;
+  if (hit.source === 'serper' && hit.confidence !== 'high') return false;
   return Boolean(hit.first_name || hit.last_name);
 }
 

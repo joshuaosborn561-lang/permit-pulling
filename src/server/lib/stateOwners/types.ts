@@ -43,6 +43,7 @@ export const BOARD_SOURCES = [
   'pa_dos',
   'ca_bizfile',
   'us_sos',
+  'serper',
 ] as const;
 
 export type BoardSource = (typeof BOARD_SOURCES)[number];

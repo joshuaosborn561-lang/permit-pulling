@@ -15,8 +15,9 @@ import { ensureIlDtaIndex, matchIlDta, IL_DTA_HOME } from './ilDta.js';
 import { resolveHtmlOfficerState } from './htmlStates.js';
 import { resolveColoradoAgentOnly, resolveOhioAgentOnly } from './agentStates.js';
 import { hitsFromRoster } from './officers.js';
+import { resolveSerperOwner, serperIsHighConfidence } from './serperOwners.js';
 import type { NameLookupInput, NameLookupResult } from './types.js';
-import { agentOnlyHit } from './waterfall.js';
+import { agentOnlyHit, isWaterfallReady } from './waterfall.js';
 
 export function hasPermitLicense(input: NameLookupInput): boolean {
   const st = normalizeState(input.state);
@@ -53,6 +54,24 @@ function withSpend(result: NameLookupResult, usd: number, via: boolean, ocr?: bo
     apify_usd: Number(((result.apify_usd || 0) + usd).toFixed(4)),
     via_apify: result.via_apify || via,
     ocr_used: result.ocr_used || ocr,
+  };
+}
+
+function withSerperMeta(result: NameLookupResult, serper: NameLookupResult): NameLookupResult {
+  return {
+    ...result,
+    via_serper: Boolean(result.via_serper || serper.via_serper || (serper.serper_credits || 0) > 0),
+    serper_credits: (result.serper_credits || 0) + (serper.serper_credits || 0),
+    serper_usd: Number(((result.serper_usd || 0) + (serper.serper_usd || 0)).toFixed(4)),
+  };
+}
+
+function withOfficialSpend(serper: NameLookupResult, official: NameLookupResult): NameLookupResult {
+  return {
+    ...serper,
+    apify_usd: Number(((serper.apify_usd || 0) + (official.apify_usd || 0)).toFixed(4)),
+    via_apify: Boolean(serper.via_apify || official.via_apify),
+    ocr_used: Boolean(serper.ocr_used || official.ocr_used),
   };
 }
 
@@ -188,16 +207,11 @@ async function resolveIllinois(input: NameLookupInput, ctx?: LookupContext): Pro
   };
 }
 
-export async function resolveNameLookup(
+async function resolveOfficialNameLookup(
   input: NameLookupInput,
   ctx?: LookupContext,
 ): Promise<NameLookupResult> {
-  const company = String(input.company_name || '').trim();
   const state = normalizeState(input.state);
-  if (!company || !state) {
-    return emptyNameResult(input, 'not_found');
-  }
-
   const entry = catalogByCode().get(state);
   if (!entry) {
     return emptyNameResult(input, 'no_source');
@@ -222,6 +236,45 @@ export async function resolveNameLookup(
     source_url: entry.search_url,
     implemented: false,
   });
+}
+
+/**
+ * Serper-first for every state. High-confidence Google hits skip SOS/Apify.
+ * Apify stays the blocked-HTML fallback behind APIFY_MAX_USD when Serper
+ * cannot return a waterfall-ready owner.
+ */
+export async function resolveNameLookup(
+  input: NameLookupInput,
+  ctx?: LookupContext,
+): Promise<NameLookupResult> {
+  const company = String(input.company_name || '').trim();
+  const state = normalizeState(input.state);
+  if (!company || !state) {
+    return emptyNameResult(input, 'not_found');
+  }
+
+  const serper = await resolveSerperOwner(input, ctx);
+  if (serperIsHighConfidence(serper)) {
+    return serper;
+  }
+
+  const official = await resolveOfficialNameLookup(input, ctx);
+  if (official.people.some((p) => isWaterfallReady(p))) {
+    return withSerperMeta(official, serper);
+  }
+  if (serper.people.length) {
+    return withOfficialSpend(serper, official);
+  }
+  if (!official.implemented && (serper.via_serper || (serper.serper_credits || 0) > 0)) {
+    return withSerperMeta(
+      emptyNameResult(input, 'not_found', 'serper', {
+        implemented: true,
+        source_url: official.source_url,
+      }),
+      serper,
+    );
+  }
+  return withSerperMeta(official, serper);
 }
 
 export function leadToNameInput(lead: OwnerLead): NameLookupInput {

@@ -1,7 +1,8 @@
 import { getBoardFetch, type FetchLike } from '../http.js';
 import type { NameLookupInput } from './types.js';
-import { ApifySpendTracker, apifyMaxUsdFromEnv } from './spend.js';
+import { ApifySpendTracker, SerperCreditTracker, apifyMaxUsdFromEnv } from './spend.js';
 import type { IlDtaIndex } from './ilDta.js';
+import type { SerperSearchResponse } from './types.js';
 
 export type HtmlKind = 'search' | 'detail' | 'document';
 
@@ -15,6 +16,13 @@ export interface LookupContext {
   ilIndex?: IlDtaIndex | null;
   includeAgents?: boolean;
   spend?: ApifySpendTracker;
+  serper?: SerperCreditTracker;
+  serperKey?: string | null;
+  serperEnabled?: boolean;
+  /** Fixture: skip google.serper.dev and return this payload (or per-query). */
+  serperOrganic?:
+    | SerperSearchResponse
+    | ((query: string) => SerperSearchResponse | Promise<SerperSearchResponse>);
   /** Fixture: skip CA HTTP and use this keyword-search JSON. */
   caPayload?: unknown;
   caDetailPayload?: unknown;
@@ -58,6 +66,14 @@ export function ilDtaDirFromEnv(): string | null {
   return process.env.IL_DTA_DIR?.trim() || null;
 }
 
+export function serperKeyFromEnv(): string | null {
+  for (const name of ['SERPER_API_KEY', 'SERPER_KEY', 'serper_api_key'] as const) {
+    const v = process.env[name]?.trim();
+    if (v) return v;
+  }
+  return null;
+}
+
 export function defaultLookupContext(overrides: LookupContext = {}): LookupContext {
   const ctx: LookupContext = {
     live: true,
@@ -67,6 +83,9 @@ export function defaultLookupContext(overrides: LookupContext = {}): LookupConte
     ilDtaDir: ilDtaDirFromEnv(),
     includeAgents: false,
     spend: overrides.spend ?? new ApifySpendTracker(),
+    serper: overrides.serper ?? new SerperCreditTracker(),
+    serperKey: overrides.serperKey ?? serperKeyFromEnv(),
+    serperEnabled: overrides.serperEnabled ?? true,
     apifyMaxUsd: overrides.apifyMaxUsd ?? apifyMaxUsdFromEnv(),
     ...overrides,
   };
@@ -83,6 +102,13 @@ export function ctxSpend(ctx?: LookupContext): ApifySpendTracker {
   const spend = new ApifySpendTracker();
   if (ctx) ctx.spend = spend;
   return spend;
+}
+
+export function ctxSerper(ctx?: LookupContext): SerperCreditTracker {
+  if (ctx?.serper) return ctx.serper;
+  const serper = new SerperCreditTracker();
+  if (ctx) ctx.serper = serper;
+  return serper;
 }
 
 export function fixtureHtml(ctx: LookupContext | undefined, state: string, kind: HtmlKind, input: NameLookupInput, url?: string): string | null {

@@ -1,5 +1,18 @@
 import type { BoardSource, CoverageReason, OwnerConfidence, OwnerRole } from '../types.js';
 
+export interface SerperOrganicHit {
+  title?: string;
+  link?: string;
+  snippet?: string;
+  position?: number;
+}
+
+export interface SerperSearchResponse {
+  organic?: SerperOrganicHit[];
+  knowledgeGraph?: { title?: string; description?: string | null };
+  credits?: number;
+}
+
 export type OfficerYield = 'officers' | 'agent_only' | 'filings_pdf' | 'none';
 export type SosAccess = 'api_key' | 'open_data' | 'bulk_file' | 'html' | 'reuse_adapter' | 'none';
 export type ApifyPolicy = 'fallback' | 'never' | 'already_proxied';
@@ -39,6 +52,8 @@ export interface WaterfallOwnerHit {
   domain: string | null;
   source_url: string;
   confidence: OwnerConfidence;
+  /** 0–1. Serper high-confidence waterfall_ready requires >= 0.8. */
+  confidence_score?: number;
   state: string;
   source: BoardSource;
   role: OwnerRole;
@@ -58,6 +73,9 @@ export interface NameLookupResult {
   apify_usd?: number;
   via_apify?: boolean;
   ocr_used?: boolean;
+  via_serper?: boolean;
+  serper_credits?: number;
+  serper_usd?: number;
 }
 
 export type BusinessOwnerJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'stopped';
@@ -77,6 +95,7 @@ export interface BusinessOwnerNamelessSample {
   people_count: number;
   waterfall_ready: boolean;
   via_apify?: boolean;
+  via_serper?: boolean;
   ocr_used?: boolean;
 }
 
@@ -93,6 +112,11 @@ export interface BusinessOwnerJobSnapshot {
   apify_estimate_usd: number;
   apify_usd_spent: number;
   via_apify: number;
+  serper_estimate_credits: number;
+  serper_estimate_usd: number;
+  serper_credits: number;
+  serper_usd: number;
+  via_serper: number;
   ocr_used: number;
   writes_enabled: boolean;
   phase: number;
