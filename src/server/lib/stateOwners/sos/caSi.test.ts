@@ -24,6 +24,17 @@ describe('CA Statement of Information endpoints', () => {
     assert.ok(rows.some((r) => r.name === 'PAT MORGAN'));
   });
 
+  it('parses the live bizfileOnline SI PDF officer table (web-fetch text)', () => {
+    const text = readFileSync(join(dir, 'ca-si-officer-table-pdf.txt'), 'utf8');
+    const rows = parseSiOfficerTable(text);
+    assert.ok(rows.some((r) => r.name === 'JANE SAMPLE' && /Chief Executive Officer/i.test(r.title)));
+    assert.ok(rows.some((r) => r.name === 'ALEX SAMPLE' && /Director/i.test(r.title)));
+    assert.equal(
+      rows.some((r) => /agent/i.test(r.title) || /JANE AGENT/i.test(r.name) || /OAKLAND/i.test(r.name)),
+      false,
+    );
+  });
+
   it('reads document ids from the recorded history shape', () => {
     const history = JSON.parse(readFileSync(join(dir, 'ca-si-history.json'), 'utf8'));
     const ids = documentIdsFromPayload(history);

@@ -154,8 +154,9 @@ export function estimateCaHybridUsd(companyCount: number): number {
   if (!n) return 0;
   const start = 0.005;
   const search = 0.025 * n;
-  const records = 0.003 * n * 8;
-  const history = 0.004 * n;
+  const perRecord = 8;
+  const records = 0.003 * n * perRecord;
+  const history = 0.004 * n * perRecord;
   const pdf = 0.002 * n;
   return Number((start + search + records + history + pdf).toFixed(2));
 }

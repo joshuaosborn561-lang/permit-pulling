@@ -3,7 +3,13 @@ import type { LookupContext } from './context.js';
 import { ctxFetch } from './context.js';
 import { apifyFetchHtml } from './apifyPlaywright.js';
 import { textFromDocument } from './ocr.js';
-import { parseOfficerRoster, type RosterEntry } from './officers.js';
+import {
+  CAP_NAME_CAPTURE,
+  isOfficerTitle,
+  parseOfficerRoster,
+  scrubCapitalizedPersonName,
+  type RosterEntry,
+} from './officers.js';
 import { CA_BIZFILE_ONLINE_SEARCH, CA_BIZFILE_ONLINE_UI, type CaBizfileEntity } from './caBizfile.js';
 
 export { CA_BIZFILE_ONLINE_SEARCH, CA_BIZFILE_ONLINE_UI };
@@ -34,6 +40,92 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function splitOfficerTitleLine(line: string): string[] {
+  const parts = String(line || '')
+    .split(/\s*,\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (!parts.length) return [];
+  if (parts.every((part) => isOfficerTitle(part))) return parts;
+  return [];
+}
+
+/**
+ * Live bizfileOnline SI PDFs (web-fetch text) look like:
+ *   Officer Name <tab> Officer Address <tab> Position(s)
+ *   • JANE SAMPLE <tab> 100 MAIN ST.
+ *   OAKLAND, CA 94612
+ *   Chief Executive Officer, Chief Financial Officer, Secretary
+ * Rewrite that into the labeled TITLE\\nNAME shape parseOfficerRoster already handles.
+ */
+export function normalizeCaSosSiPdf(text: string): string {
+  const raw = String(text || '');
+  if (!/Officer Name/i.test(raw) && !/Position\(s\)/i.test(raw) && !/Director Name/i.test(raw)) {
+    return raw;
+  }
+  const lines = raw
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const emitted: string[] = [];
+  let section: 'officer' | 'director' | 'manager' | null = null;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (/^additional officers$/i.test(line) || (/officer name/i.test(line) && /position/i.test(line))) {
+      section = 'officer';
+      continue;
+    }
+    if (/^officers$/i.test(line)) {
+      section = 'officer';
+      continue;
+    }
+    if (/^directors$/i.test(line) || /director name/i.test(line)) {
+      section = 'director';
+      continue;
+    }
+    if (/^managers$/i.test(line) || /manager name/i.test(line)) {
+      section = 'manager';
+      continue;
+    }
+    if (/agent for service|type of business|electronic signature|labor judgment/i.test(line)) {
+      section = null;
+      continue;
+    }
+    if (!section) continue;
+    if (/vacancies|none entered/i.test(line)) continue;
+    if (splitOfficerTitleLine(line).length) continue;
+
+    const stripped = line.replace(/^[+•*\-]+\s*/, '');
+    // Address-only city lines ("SAN DIEGO, CA 92105") are not officers; person rows use a tab.
+    if (!/\t/.test(stripped) && /,\s*[A-Z]{2}\s*\d{5}/i.test(stripped)) continue;
+    const nameHit = stripped.match(new RegExp(`^${CAP_NAME_CAPTURE}`));
+    const nameRaw = (nameHit?.[1] || stripped.split(/\t|\s{2,}/)[0] || '').trim();
+    if (!nameRaw || /\d/.test(nameRaw)) continue;
+    if (isOfficerTitle(nameRaw)) continue;
+    if (!scrubCapitalizedPersonName(nameRaw)) continue;
+
+    let titles: string[] =
+      section === 'director' ? ['Directors'] : section === 'manager' ? ['Managers'] : [];
+    for (let j = i + 1; j < Math.min(lines.length, i + 6); j += 1) {
+      const parts = splitOfficerTitleLine(lines[j]);
+      if (parts.length) {
+        titles = parts;
+        break;
+      }
+      const nxtName = lines[j].replace(/^[+•*\-]+\s*/, '').split(/\t/)[0].trim();
+      if (scrubCapitalizedPersonName(nxtName) && !/\d/.test(nxtName)) break;
+    }
+    if (!titles.length) continue;
+    for (const title of titles) {
+      emitted.push(title);
+      emitted.push(nameRaw);
+    }
+  }
+  return emitted.length ? emitted.join('\n') : raw;
+}
+
 /**
  * SI-550 / LLC-12 officer table (CEO, CFO, Secretary, Directors, Managers).
  * Challenge HTML is never parsed. Host-side; pageFunction only extracts text.
@@ -41,7 +133,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 export function parseSiOfficerTable(text: string): RosterEntry[] {
   const raw = String(text || '');
   if (!raw.trim() || isChallengePage(raw)) return [];
-  return parseOfficerRoster(raw);
+  return parseOfficerRoster(normalizeCaSosSiPdf(raw));
 }
 
 export function documentIdsFromPayload(payload: unknown): string[] {

@@ -17,6 +17,7 @@ import {
   caBatchIsChallenge,
   caBatchIsWafBlock,
   caBatchLatestSiDocumentId,
+  caBatchMapRow,
   caBatchPickEntity,
   caBatchRowsFromPayload,
   caBatchCompanyKey,
@@ -56,6 +57,37 @@ describe('CA batch isomorphic helpers (recorded fixtures)', () => {
   it('finds the latest Statement of Information document id', () => {
     const history = JSON.parse(readFileSync(join(dir, 'ca-si-history.json'), 'utf8'));
     assert.equal(caBatchLatestSiDocumentId(history), '000111222333444555666777888999000111222333444555');
+  });
+
+  it('maps live dz_omar rows (name/entityNumber/principalAddress) and prefers SI over Initial Filing', () => {
+    const row = {
+      searchQuery: 'Sample Builders LLC',
+      name: 'SAMPLE BUILDERS LLC',
+      entityNumber: '202399900002',
+      status: 'Active',
+      principalAddress: '100 MAIN ST, OAKLAND, CA 94612',
+      filings: [
+        {
+          type: 'Statement of Information',
+          date: '2/6/2026',
+          documentUrl: 'https://bizfileonline.sos.ca.gov/api/report/GetImageByNum/000111222333444555666777888999000111222333444555',
+        },
+        {
+          type: 'Initial Filing',
+          date: '1/11/2021',
+          documentUrl: 'https://bizfileonline.sos.ca.gov/api/report/GetImageByNum/111149184243144165204173177061167234074130193178',
+        },
+      ],
+    };
+    const mapped = caBatchMapRow(row);
+    assert.equal(mapped?.EntityID, '202399900002');
+    assert.equal(mapped?.EntityName, 'SAMPLE BUILDERS LLC');
+    assert.equal(mapped?.EntityCity, 'OAKLAND');
+    assert.equal(
+      caBatchLatestSiDocumentId(row),
+      '000111222333444555666777888999000111222333444555',
+    );
+    assert.equal(caBatchLatestSiDocumentId({ filings: [row.filings[1]] }), '');
   });
 
   it('extracts officer literals from a PDF latin1 string', () => {

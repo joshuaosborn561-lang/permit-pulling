@@ -147,36 +147,68 @@ export function caBatchAsRecord(value: unknown): Record<string, unknown> | null 
   return value as Record<string, unknown>;
 }
 
+/** City/ZIP from a US address string ("548 MARKET ST, SAN FRANCISCO, CA 94104") or nested object. */
+export function caBatchCityZipFromAddress(value: unknown): { city: string | null; zip: string | null } {
+  if (typeof value === 'string') {
+    const compact = value.replace(/\s+/g, ' ').trim();
+    const m = compact.match(/,\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})(?:-\d{4})?\s*$/i);
+    if (m) return { city: m[1].trim(), zip: m[3] };
+    return { city: null, zip: null };
+  }
+  const rec = caBatchAsRecord(value);
+  if (!rec) return { city: null, zip: null };
+  return {
+    city: caBatchPickString(rec, ['CITY', 'City', 'city']),
+    zip: caBatchPickString(rec, ['POSTAL_CODE', 'ZIP', 'Zip', 'zip', 'postalCode']),
+  };
+}
+
 export function caBatchNestedCity(row: Record<string, unknown>): { city: string | null; zip: string | null } {
-  const addr =
-    caBatchAsRecord(row.PRINCIPAL_ADDRESS) ||
-    caBatchAsRecord(row.MAILING_ADDRESS) ||
-    caBatchAsRecord(row.PHYSICAL_ADDRESS) ||
-    caBatchAsRecord(row.ADDRESS);
-  const city = addr ? caBatchPickString(addr, ['CITY', 'City', 'city']) : null;
-  const zip = addr ? caBatchPickString(addr, ['POSTAL_CODE', 'ZIP', 'Zip', 'zip']) : null;
-  return { city, zip };
+  const blobs = [
+    row.PRINCIPAL_ADDRESS,
+    row.MAILING_ADDRESS,
+    row.PHYSICAL_ADDRESS,
+    row.ADDRESS,
+    row.principalAddress,
+    row.mailingAddress,
+    row.physicalAddress,
+    row.address,
+  ];
+  for (const blob of blobs) {
+    const got = caBatchCityZipFromAddress(blob);
+    if (got.city || got.zip) return got;
+  }
+  return { city: null, zip: null };
 }
 
 export function caBatchNestedAgent(row: Record<string, unknown>): { name: string | null; city: string | null } {
   const agent = caBatchAsRecord(row.AGENT) || caBatchAsRecord(row.Agent);
   if (!agent) {
     return {
-      name: caBatchPickString(row, ['AgentName', 'AGENT_NAME']),
-      city: caBatchPickString(row, ['AgentCity', 'AGENT_CITY']),
+      name: caBatchPickString(row, ['AgentName', 'AGENT_NAME', 'agentName']),
+      city: caBatchPickString(row, ['AgentCity', 'AGENT_CITY', 'agentCity']),
     };
   }
-  const name = caBatchPickString(agent, ['NAME', 'Name', 'FULL_NAME']);
+  const name = caBatchPickString(agent, ['NAME', 'Name', 'FULL_NAME', 'name']);
   const addr = caBatchAsRecord(agent.ADDRESS) || caBatchAsRecord(agent.PHYSICAL_ADDRESS);
-  const city = addr ? caBatchPickString(addr, ['CITY', 'City']) : caBatchPickString(agent, ['CITY', 'City']);
+  const city = addr ? caBatchPickString(addr, ['CITY', 'City', 'city']) : caBatchPickString(agent, ['CITY', 'City', 'city']);
   return { name, city };
 }
 
 export function caBatchMapRow(raw: unknown): CaBatchEntity | null {
   const row = caBatchAsRecord(raw);
   if (!row) return null;
-  const name = caBatchPickString(row, ['EntityName', 'ENTITY_NAME', 'TITLE', 'Name']);
-  const id = caBatchPickString(row, ['EntityID', 'ENTITY_NUM', 'RECORD_NUM', 'RECORD_NUMBER', 'ID']);
+  const name = caBatchPickString(row, ['EntityName', 'ENTITY_NAME', 'TITLE', 'Name', 'name', 'entityName']);
+  const id = caBatchPickString(row, [
+    'EntityID',
+    'ENTITY_NUM',
+    'RECORD_NUM',
+    'RECORD_NUMBER',
+    'ID',
+    'entityNumber',
+    'entity_number',
+    'recordNumber',
+  ]);
   if (!name && !id) return null;
   const loc = caBatchNestedCity(row);
   const agent = caBatchNestedAgent(row);
@@ -320,9 +352,31 @@ export function caBatchLatestSiDocumentId(payload: unknown): string {
     }
     const rec = caBatchAsRecord(node);
     if (!rec) return;
-    const filing = String(rec.FILING_TYPE || rec.FilingType || rec.filingType || rec.TYPE || rec.Type || '');
+    const filing = String(
+      rec.FILING_TYPE || rec.FilingType || rec.filingType || rec.TYPE || rec.Type || rec.type || rec.title || '',
+    );
     const si = /statement of information|\bSI[- ]?550\b|\bLLC[- ]?12\b/i.test(filing);
-    const date = String(rec.FILING_DATE || rec.FilingDate || rec.FILE_DATE || rec.EFFECTIVE_DATE || rec.DATE || rec.CREATED_DATE || '');
+    const date = String(
+      rec.FILING_DATE ||
+        rec.FilingDate ||
+        rec.FILE_DATE ||
+        rec.EFFECTIVE_DATE ||
+        rec.DATE ||
+        rec.CREATED_DATE ||
+        rec.date ||
+        rec.effectiveDate ||
+        '',
+    );
+    const href = String(rec.documentUrl || rec.document_url || rec.url || rec.href || rec.pdfUrl || rec.fileUrl || '');
+    const fromHref = href.match(/GetImageByNum\/([0-9]{12,})/i);
+    if (fromHref?.[1] && !seen.has(fromHref[1])) {
+      seen.add(fromHref[1]);
+      hits.push({ id: fromHref[1], date, si });
+    } else if (fromHref?.[1] && si) {
+      for (const hit of hits) {
+        if (hit.id === fromHref[1]) hit.si = true;
+      }
+    }
     const keys = ['DOCUMENT_ID', 'DocumentId', 'documentId', 'IMAGE_NUM', 'ImageNum', 'imageNum', 'IMAGE_ID'];
     for (const key of keys) {
       const v = rec[key];
@@ -342,10 +396,13 @@ export function caBatchLatestSiDocumentId(payload: unknown): string {
   };
   walk(payload);
   const siHits = hits.filter((h) => h.si);
-  const pool = siHits.length ? siHits : hits;
-  if (!pool.length) return '';
-  pool.sort((a, b) => String(b.date).localeCompare(String(a.date)));
-  return pool[0].id;
+  if (!siHits.length) return '';
+  const ts = (d: string): number => {
+    const n = Date.parse(d);
+    return Number.isFinite(n) ? n : 0;
+  };
+  siHits.sort((a, b) => ts(b.date) - ts(a.date) || String(b.date).localeCompare(String(a.date)));
+  return siHits[0].id;
 }
 
 export function caBatchUnescapePdf(raw: string): string {
