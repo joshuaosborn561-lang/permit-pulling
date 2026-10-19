@@ -1231,6 +1231,10 @@ NEXT: get_business_owner_job(job_id). Local CSV probe: npx tsx scripts/owner_loo
           .boolean()
           .optional()
           .describe('CA only: one Playwright run, Incapsula once, then a batch of companies (search + SI PDF). Skips Serper for CA rows. Enforces APIFY_MAX_USD; reports CU + residential proxy GB.'),
+        ca_debug: z
+          .boolean()
+          .optional()
+          .describe('With ca_batch: log per-step HTTP status (search/history/SI). Do not dump names.'),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },

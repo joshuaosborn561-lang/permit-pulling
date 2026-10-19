@@ -58,6 +58,8 @@ export interface LookupBusinessOwnerOpts {
   concurrency?: number;
   /** One sticky Playwright session for CA (Incapsula once, then hundreds of companies). */
   ca_batch?: boolean;
+  /** Dump per-step HTTP status from the CA Playwright run. */
+  ca_debug?: boolean;
 }
 
 function emptyStateStats() {
@@ -119,7 +121,7 @@ export function firstUseEnvelope(): Record<string, unknown> {
       'calicodev/calico developer API is government-agencies-only. Public bizfileOnline + SI; Apify Playwright + residential when Incapsula/Imperva blocks datacenter IPs. ca_batch / --ca-batch: one sticky Playwright session (groups-RESIDENTIAL), Incapsula once, then hundreds of companies (search + SI PDF).',
     ca_batch_usd_50: estimateCaBatchUsd(50),
     ca_batch_probe:
-      'npx tsx scripts/owner_lookup_sample.ts --in ca-50.csv --out ca-50-results.csv --ca-batch --states CA --no-serper',
+      'npx tsx scripts/owner_lookup_sample.ts --in ca-5.csv --out ca-5-results.csv --ca-batch --states CA --no-serper --ca-debug --checkpoint /tmp/ca-batch-5.json',
   };
 }
 
@@ -220,12 +222,14 @@ async function runLookupJob(
     ...(opts.context || {}),
     includeAgents: opts.include_agents === true || opts.context?.includeAgents === true,
     live: opts.context?.live ?? true,
+    caBatchDebug: opts.ca_debug === true || opts.context?.caBatchDebug === true,
   });
   const lanes = Math.max(1, Math.min(opts.concurrency ?? SOS_HTTP_LANES, 8));
   const samples: BusinessOwnerNamelessSample[] = [];
   try {
     const caBatch = opts.ca_batch === true;
     snapshot.ca_batch = caBatch;
+    if (opts.ca_debug === true) snapshot.ca_debug = true;
     const caRows = caBatch ? rows.filter((row) => normalizeState(row.state) === 'CA') : [];
     const otherRows = caBatch ? rows.filter((row) => normalizeState(row.state) !== 'CA') : rows;
     const resolved: Array<{ row: NameLookupInput; result: NameLookupResult }> = [];

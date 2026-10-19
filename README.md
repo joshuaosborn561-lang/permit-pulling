@@ -67,17 +67,18 @@ Required CSV columns: `company` (or `company_name`), `city`, `state`.
 | `--live false` | Offline / fixture mode (no SOS HTTP) |
 | `--include-agents` | Include registered-agent rows (still not waterfall-ready) |
 | `--states CA,IL` | Limit states |
-| `--ca-batch` | CA SOS batched Playwright (Incapsula once, then the whole CSV in one session) |
+| `--ca-batch` | CA SOS batched Playwright (Incapsula once, then type/submit search in that session) |
+| `--ca-debug` | Dump per-step HTTP status for `--ca-batch` (search / history / SI) |
 | `--checkpoint path` | Resume file for `--ca-batch` |
 | `--summary path` | Summary JSON path (default `<out>.summary.json`) |
 
 Summary prints hit rate per state, officer vs agent-only counts, Serper credits, Apify $ / CU / residential GB. Permit/license lookup is unchanged (`match_state_owners`).
 
-50-company CA batched probe (Apify residential only, no new proxy vendor):
+50-company CA batched probe (Apify residential only, no new proxy vendor). Smoke 5 rows with `--ca-debug` first; use a **new** checkpoint so a prior 0/40 `not_found` file is not reused:
 
 ```bash
 export APIFY_TOKEN=... APIFY_MAX_USD=5
-npx tsx scripts/owner_lookup_sample.ts --in ca-50.csv --out ca-50-results.csv --ca-batch --states CA --no-serper
+npx tsx scripts/owner_lookup_sample.ts --in ca-5.csv --out ca-5-results.csv --ca-batch --states CA --no-serper --ca-debug --checkpoint /tmp/ca-batch-5.json
 ```
 
 Claude connector: `https://workspace-production-4702.up.railway.app/mcp` (authless).

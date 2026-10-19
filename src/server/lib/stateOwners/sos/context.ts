@@ -54,6 +54,8 @@ export interface LookupContext {
   }>;
   /** Host-side CA batch checkpoint path (resume). */
   caBatchCheckpointPath?: string;
+  /** Dump per-step HTTP status from the Playwright run (CLI --ca-debug). */
+  caBatchDebug?: boolean;
   /** Fixture dataset items — skip the live Playwright run. */
   caBatchItems?: Array<{
     company_name: string;

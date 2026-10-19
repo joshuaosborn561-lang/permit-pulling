@@ -15,6 +15,7 @@ import {
 import {
   caBatchExtractPdfText,
   caBatchIsChallenge,
+  caBatchIsWafBlock,
   caBatchLatestSiDocumentId,
   caBatchPickEntity,
   caBatchRowsFromPayload,
@@ -75,15 +76,34 @@ describe('CA batch isomorphic helpers (recorded fixtures)', () => {
 });
 
 describe('CA batch pageFunction source', () => {
-  it('embeds search, history, SI image, reclear, and pushData', () => {
+  it('is a single function expression Apify can eval (no top-level const)', () => {
+    const src = caBatchPageFunctionSource().trim();
+    assert.equal(src.startsWith('async function pageFunction'), true);
+    const beforeBrace = src.slice(0, src.indexOf('{'));
+    assert.equal(/\bconst\b/.test(beforeBrace), false);
+    assert.doesNotThrow(() => new Function(`return (${src})`));
+    assert.equal(/export function/.test(src), false);
+  });
+
+  it('drives the search UI and treats 429 as blocked', () => {
     const src = caBatchPageFunctionSource();
-    assert.match(src, /async function pageFunction/);
     assert.match(src, /businessSearch/);
+    assert.match(src, /waitForResponse/);
+    assert.match(src, /\.type\(/);
+    assert.match(src, /has-text\("Search"\)/);
+    assert.match(src, /waf_429/);
+    assert.match(src, /caBatchIsWafBlock/);
+    assert.match(src, /debug_steps/);
     assert.match(src, /History\/business/);
     assert.match(src, /GetImageByNum/);
     assert.match(src, /pushData/);
-    assert.match(src, /reclear|incapsula_not_cleared|rechallenge/);
-    assert.match(src, /userData/);
+    assert.match(src, /search_no_response/);
+    assert.match(src, /search_dom/);
+    assert.match(src, /jitter\(900,\s*2400\)/);
+    assert.match(src, /ensureSearchPage/);
+    assert.match(src, /reclear\(\)/);
+    assert.match(src, /function __name\(/);
+    assert.doesNotMatch(src, /page\.evaluate\([\s\S]{0,200}fetch\s*\(/);
     assert.equal(/:\s*string\b/.test(src.replace(/"[\s\S]*?"/g, '""')), false);
   });
 });
@@ -117,6 +137,46 @@ describe('CA batch mapping + waterfall_ready', () => {
     });
     assert.equal(noEntity.people.some((p) => isWaterfallReady(p)), false);
     assert.equal(noEntity.coverage_reason, 'not_found');
+  });
+
+  it('maps 429 / errorCode 15 to blocked, never not_found', async () => {
+    const waf = JSON.stringify(
+      JSON.parse(readFileSync(join(dir, 'ca-waf-429.json'), 'utf8')),
+    );
+    assert.equal(caBatchIsWafBlock(429, waf), true);
+    assert.equal(caBatchIsWafBlock(200, waf), true);
+    assert.equal(caBatchIsWafBlock(200, '{"RecordCount":0,"EntityData":[]}'), false);
+    const got = await mapCaBatchItemToResult(
+      { company_name: 'Sample Builders LLC', city: 'Oakland', state: 'CA' },
+      {
+        company_name: 'Sample Builders LLC',
+        city: 'Oakland',
+        state: 'CA',
+        status: 'not_found',
+        retries: 1,
+        error: 'waf_429',
+        officers_text: waf,
+        debug_steps: [{ step: 'search', status: 429, errorCode: 15 }],
+      },
+    );
+    assert.equal(got.coverage_reason, 'blocked');
+    assert.equal(got.people.length, 0);
+
+    const emptyAfterRetry = await mapCaBatchItemToResult(
+      { company_name: 'Sample Builders LLC', city: 'Oakland', state: 'CA' },
+      {
+        company_name: 'Sample Builders LLC',
+        city: 'Oakland',
+        state: 'CA',
+        status: 'not_found',
+        retries: 1,
+        debug_steps: [
+          { step: 'search', status: 429, errorCode: 15 },
+          { step: 'search', status: 200, bytes: 32 },
+        ],
+      },
+    );
+    assert.equal(emptyAfterRetry.coverage_reason, 'not_found');
   });
 
   it('does not parse officers from a challenge body', async () => {
@@ -240,7 +300,14 @@ describe('CA batch spend + checkpoint', () => {
     };
     const got = await runCaBatch(
       [{ company_name: 'Sample Builders LLC', city: 'Oakland', state: 'CA' }],
-      { live: true, apifyToken: 'token', spend, fetch: fetchFn, caBatchCheckpointPath: checkpointPath },
+      {
+        live: true,
+        apifyToken: 'token',
+        spend,
+        fetch: fetchFn,
+        caBatchCheckpointPath: checkpointPath,
+        caBatchDebug: true,
+      },
       { jobId: 'job-ca', checkpointPath },
     );
     assert.equal(runPosts, 1);
@@ -250,7 +317,10 @@ describe('CA batch spend + checkpoint', () => {
     assert.deepEqual(proxy?.apifyProxyGroups, ['RESIDENTIAL']);
     const startUrls = captured?.startUrls as Array<{ userData?: { companies?: unknown[] } }>;
     assert.equal(startUrls[0]?.userData?.companies?.length, 1);
+    assert.equal((startUrls[0]?.userData as { debug?: boolean })?.debug, true);
     assert.match(String(captured?.pageFunction || ''), /businessSearch/);
+    assert.doesNotThrow(() => new Function(`return (${String(captured?.pageFunction || '')})`));
+    assert.equal(String(captured?.pageFunction || '').trim().startsWith('async function pageFunction'), true);
     assert.equal(got.results[0]?.entity_id, '202399900002');
     assert.ok(got.results[0]?.people.some((p) => isWaterfallReady(p)));
     assert.equal(spend.runs, 1);

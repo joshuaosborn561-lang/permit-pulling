@@ -51,6 +51,7 @@ export interface CaBatchDatasetItem {
   contentType?: string;
   agent_name?: string;
   error?: string;
+  debug_steps?: Array<{ step: string; status?: number; error?: string; errorCode?: number; bytes?: number }>;
 }
 
 export function caBatchCompanyKey(companyName: string, city: string | null | undefined): string {
@@ -67,6 +68,29 @@ export function caBatchIsChallenge(body: string): boolean {
   if (/_Incapsula_Resource/i.test(text) && text.length < 4000) return true;
   if (/incapsula|imperva|request unsuccessful|incident id/i.test(text) && /<META NAME="robots"/i.test(text) && text.length < 4000) {
     return true;
+  }
+  return false;
+}
+
+/** Incapsula 429 / errorCode 15 — never treat as a company miss. */
+export function caBatchIsWafBlock(status: number | string | null | undefined, body: string): boolean {
+  const code = Number(status);
+  if (code === 429 || code === 403 || code === 401) return true;
+  const text = String(body || '');
+  if (!text.trim()) return false;
+  if (caBatchIsChallenge(text)) return true;
+  if (/this request was blocked by our security service/i.test(text)) return true;
+  if (/\bwaf_429\b/i.test(text)) return true;
+  if (/errorCode["']?\s*[:=]\s*"?15\b/i.test(text)) return true;
+  if (/\bstatus["']?\s*[:=]\s*429\b/i.test(text)) return true;
+  try {
+    const parsed = JSON.parse(text.trim());
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const err = parsed.errorCode || parsed.error_code || parsed.ErrorCode || parsed.code;
+      if (Number(err) === 15) return true;
+    }
+  } catch {
+    /* not json */
   }
   return false;
 }

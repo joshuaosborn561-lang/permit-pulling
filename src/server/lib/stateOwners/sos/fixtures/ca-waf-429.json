@@ -1,0 +1,5 @@
+{
+  "note": "Recorded Incapsula WAF body from bizfileOnline businessSearch when called as page.evaluate fetch() after the search page had already cleared. HTTP 429. Must be status=blocked, never not_found.",
+  "errorCode": 15,
+  "message": "This request was blocked by our security service"
+}

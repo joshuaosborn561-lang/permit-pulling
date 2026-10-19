@@ -114,6 +114,7 @@ export interface BusinessOwnerJobSnapshot {
   apify_compute_units?: number;
   apify_proxy_gb?: number;
   ca_batch?: boolean;
+  ca_debug?: boolean;
   via_apify: number;
   serper_estimate_credits: number;
   serper_estimate_usd: number;

@@ -46,6 +46,7 @@ Options:
   --no-serper          Skip google.serper.dev (default: Serper-first for every state)
   --no-apify           Never call Apify Playwright (fallback only after Serper miss)
   --ca-batch           CA SOS batched Playwright: Incapsula once, then hundreds of companies
+  --ca-debug           With --ca-batch: dump per-step HTTP status (search/history/SI)
   --checkpoint <path>  Resume file for --ca-batch (default: tmpdir)
   --il-dta-dir <path>  Illinois Data Transparency Act files (or env IL_DTA_DIR)
   --live false         Skip official HTTP (fixture/offline)
@@ -53,9 +54,9 @@ Options:
 Env: SERPER_API_KEY, APIFY_TOKEN, APIFY_MAX_USD, IL_DTA_DIR, CA_BATCH_CHECKPOINT
 No Supabase writes. Permit/license path is unchanged (match_state_owners).
 
-50-company CA probe (Apify residential, no new proxy vendor):
+5-company CA smoke, then 50 (Apify residential, no new proxy vendor):
   export APIFY_TOKEN=... APIFY_MAX_USD=5
-  npx tsx scripts/owner_lookup_sample.ts --in ca-50.csv --out ca-50-results.csv --ca-batch --states CA --no-serper
+  npx tsx scripts/owner_lookup_sample.ts --in ca-5.csv --out ca-5-results.csv --ca-batch --states CA --no-serper --ca-debug --checkpoint /tmp/ca-batch-5.json
 `);
 }
 
@@ -87,6 +88,7 @@ async function main(): Promise<void> {
     serperEnabled: caBatch ? false : !hasFlag('--no-serper'),
     ilDtaDir: arg('--il-dta-dir') || process.env.IL_DTA_DIR || null,
     caBatchCheckpointPath: arg('--checkpoint') || undefined,
+    caBatchDebug: hasFlag('--ca-debug'),
     spend,
     serper,
   });
@@ -102,6 +104,18 @@ async function main(): Promise<void> {
     });
     for (let i = 0; i < caRows.length; i++) {
       lines.push(resultToCsvRow(caRows[i], batch.results[i]));
+    }
+    if (hasFlag('--ca-debug')) {
+      const debugPath = resolve(arg('--debug-out') || `${resolve(outPath)}.debug.json`);
+      const debugRows = Object.values(batch.checkpoint.items).map((item) => ({
+        company: item.company_name,
+        city: item.city,
+        status: item.status,
+        error: item.error || '',
+        steps: item.debug_steps || [],
+      }));
+      mkdirSync(dirname(debugPath), { recursive: true });
+      writeFileSync(debugPath, JSON.stringify(debugRows, null, 2) + '\n', 'utf8');
     }
   } else if (!caBatch) {
     lines.push(
@@ -150,6 +164,7 @@ async function main(): Promise<void> {
         hit_rate_by_state: summary.hit_rate_by_state,
         officer_vs_agent: summary.officer_vs_agent,
         ca_batch: caBatch,
+        ca_debug: hasFlag('--ca-debug'),
         apify_usd_spent: summary.apify_usd_spent,
         apify_compute_units: payload.apify_compute_units,
         apify_proxy_gb: payload.apify_proxy_gb,

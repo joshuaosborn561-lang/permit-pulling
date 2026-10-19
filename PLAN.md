@@ -145,7 +145,7 @@ Implement adapters in this order. Do not skip ahead to a blocked state while CA 
   - JSON: `POST https://bizfileonline.sos.ca.gov/api/Records/businessSearch` with `SEARCH_VALUE` + `SEARCH_FILTER_TYPE_ID=search`
 - Cost of the search itself: **free** (official public site). Compute cost is Apify if the WAF blocks us.
 - Fields: entity number/name/status, addresses when present, often **agent**. **Officers are not reliably in the search JSON** — they come from Statement of Information (§5.3).
-- Anti-bot: **Incapsula / Imperva**. Datacenter IPs are blocked. **Direct HTTP first.** If the body is a challenge/403, **Apify Playwright + residential proxy** (`groups-RESIDENTIAL`) so the POST runs same-origin after a browser cookie. **Batched CA path** (`ca_batch` / `--ca-batch`): one sticky Playwright run (`proxyRotation: UNTIL_FAILURE`, `maxConcurrency: 1`) clears Incapsula once, then POSTs `businessSearch` for hundreds of companies in the same session, fuzzy-matches name+city, fetches filing history, downloads the latest Statement of Information PDF in-session (SI PDFs return officer-table text: CEO, CFO, Secretary, Directors, Managers; OCR fallback for scans). Mid-session re-challenge: re-clear, retry the item, cap 3. Host checkpoint JSON resumes a failed run. Officers are `waterfall_ready` only with a confirmed `entity_id`. Enforce `APIFY_MAX_USD`; report CU + `PROXY_RESIDENTIAL_TRANSFER_GBYTES`. Never a paid CA dataset, never Unblocker, never a new proxy vendor.
+- Anti-bot: **Incapsula / Imperva**. Datacenter IPs are blocked. **Direct HTTP first.** If the body is a challenge/403, **Apify Playwright + residential proxy** (`groups-RESIDENTIAL`) so the POST runs same-origin after a browser cookie. **Batched CA path** (`ca_batch` / `--ca-batch`): one sticky Playwright run (`proxyRotation: UNTIL_FAILURE`, `maxConcurrency: 1`) clears Incapsula once, then **types into the public search box and submits** (direct `page.evaluate` XHR is 429 / errorCode 15 even after the cookie). Capture the SPA `businessSearch` / history / SI network response, fuzzy-match name+city, latest Statement of Information PDF (officer-table text: CEO, CFO, Secretary, Directors, Managers; OCR fallback for scans). Human-like delays + jitter between companies. 429 / errorCode 15 is `blocked` (retry + re-clear), never `not_found`. `--ca-debug` dumps per-step HTTP status. Host checkpoint JSON resumes a failed run. Officers are `waterfall_ready` only with a confirmed `entity_id`. Enforce `APIFY_MAX_USD`; report CU + `PROXY_RESIDENTIAL_TRANSFER_GBYTES`. Never a paid CA dataset, never Unblocker, never a new proxy vendor.
 - City tie-break: use principal / mailing / agent city on the search row.
 
 **Verdict:** public bizfileOnline is the search tool. A hit with only an agent name is `agent_only` until SI officers parse.
@@ -452,14 +452,17 @@ One sticky Playwright session (Apify `groups-RESIDENTIAL` only). Skips Serper fo
 ```bash
 export APIFY_TOKEN=...          # existing Apify token
 export APIFY_MAX_USD=5          # hard cap
-# CSV columns: company, city, state  (50 CA rows)
+# Smoke 5 rows first (--ca-debug dumps per-step HTTP status). Use a NEW checkpoint;
+# a prior 0/40 not_found file would skip those companies.
 npx tsx scripts/owner_lookup_sample.ts \
-  --in ca-50.csv \
-  --out ca-50-results.csv \
+  --in ca-5.csv \
+  --out ca-5-results.csv \
   --ca-batch \
   --states CA \
   --no-serper \
-  --checkpoint /tmp/ca-batch-50.json
+  --ca-debug \
+  --checkpoint /tmp/ca-batch-5.json
+# Then scale to 50 only after the smoke shows 200s on businessSearch (not 429 / errorCode 15).
 ```
 
 Same path via MCP: `lookup_business_owner({ ca_batch: true, wait: true, rows: [...50 CA companies...] })`. Poll `get_business_owner_job`. Summary fields: `named`, `apify_usd_spent`, `apify_compute_units`, `apify_proxy_gb`. Officers are `waterfall_ready` only when `entity_id` is set. Do not dump names in chat.

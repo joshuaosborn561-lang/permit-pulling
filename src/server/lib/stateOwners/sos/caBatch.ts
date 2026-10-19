@@ -8,6 +8,7 @@ import {
   CA_BATCH_UI,
   caBatchCompanyKey,
   caBatchIsChallenge,
+  caBatchIsWafBlock,
   type CaBatchCompany,
   type CaBatchDatasetItem,
 } from './caBatchLogic.js';
@@ -98,10 +99,20 @@ export function caBatchItemComplete(item: CaBatchDatasetItem | undefined): boole
 function asDatasetItem(raw: unknown, fallback: CaBatchCompany): CaBatchDatasetItem {
   const row = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   const statusRaw = String(row.status || 'error');
-  const status: CaBatchDatasetItem['status'] =
+  let status: CaBatchDatasetItem['status'] =
     statusRaw === 'ok' || statusRaw === 'not_found' || statusRaw === 'blocked' || statusRaw === 'error'
       ? statusRaw
       : 'error';
+  const lastSearch = Array.isArray(row.debug_steps)
+    ? [...(row.debug_steps as Array<{ step?: string; status?: number }>)].reverse().find((s) => s && s.step === 'search')
+    : undefined;
+  if (
+    status === 'not_found' &&
+    (caBatchIsWafBlock(0, String(row.error || '')) ||
+      caBatchIsWafBlock(Number(lastSearch?.status) || 0, JSON.stringify(lastSearch || {})))
+  ) {
+    status = 'blocked';
+  }
   const methodRaw = String(row.match_method || '');
   const match_method: CaBatchDatasetItem['match_method'] =
     methodRaw === 'exact' || methodRaw === 'substring' || methodRaw === 'trigram' ? methodRaw : undefined;
@@ -122,6 +133,9 @@ function asDatasetItem(raw: unknown, fallback: CaBatchCompany): CaBatchDatasetIt
     contentType: row.contentType ? String(row.contentType) : undefined,
     agent_name: row.agent_name ? String(row.agent_name) : undefined,
     error: row.error ? String(row.error) : undefined,
+    debug_steps: Array.isArray(row.debug_steps)
+      ? (row.debug_steps as CaBatchDatasetItem['debug_steps'])
+      : undefined,
   };
 }
 
@@ -133,7 +147,13 @@ export async function mapCaBatchItemToResult(
   if (!item) {
     return emptyCaResult(input, 'not_found');
   }
-  if (item.status === 'blocked') {
+  const lastSearch = [...(item.debug_steps || [])].reverse().find((s) => s && s.step === 'search');
+  if (
+    item.status === 'blocked' ||
+    (!item.entity_id &&
+      (caBatchIsWafBlock(0, item.error || '') ||
+        caBatchIsWafBlock(Number(lastSearch?.status) || 0, JSON.stringify(lastSearch || {}))))
+  ) {
     return emptyCaResult(input, 'blocked', {
       source_url: item.source_url || CA_BATCH_UI,
       via_apify: true,
@@ -252,7 +272,12 @@ export async function runCaBatch(
           break;
         }
         const run = await runPlaywrightActor(ctx, {
-          startUrls: [{ url: CA_BATCH_UI, userData: { companies: group } }],
+          startUrls: [
+            {
+              url: CA_BATCH_UI,
+              userData: { companies: group, debug: Boolean(ctx?.caBatchDebug) },
+            },
+          ],
           pageFunction,
           pollMaxMs: CA_BATCH_POLL_MAX_MS,
           maxConcurrency: 1,
