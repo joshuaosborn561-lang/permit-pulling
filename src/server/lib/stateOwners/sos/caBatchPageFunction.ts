@@ -15,6 +15,7 @@ import {
   caBatchNestedAgent,
   caBatchNestedCity,
   caBatchNormalizeName,
+  caBatchCoreSearchName,
   caBatchParseJson,
   caBatchPickEntity,
   caBatchPickString,
@@ -419,7 +420,7 @@ async function pageFunction(context: {
             continue;
           }
         }
-        const search = await searchViaUi(company.company_name, steps);
+        const search = await searchViaUi(caBatchCoreSearchName(company.company_name) || company.company_name, steps);
         if (caBatchIsWafBlock(search.status, search.text) || caBatchIsChallenge(search.text)) {
           lastError = search.status === 429 || errorCodeOf(search.text) === 15 ? 'waf_429' : 'rechallenge_search';
           item.status = 'blocked';
@@ -522,6 +523,7 @@ async function pageFunction(context: {
           business_name: picked.entity.EntityName || '',
           match_method: picked.method,
           match_score: picked.score,
+          city_match: Boolean(picked.city_match),
           source_url: sourceUrl,
           document_id: documentId,
           officers_text: officersText,
@@ -552,6 +554,7 @@ const PAGE_FUNCTION_HELPERS = [
   caBatchIsChallenge,
   caBatchIsWafBlock,
   caBatchNormalizeName,
+  caBatchCoreSearchName,
   caBatchTrigram,
   caBatchPickString,
   caBatchAsRecord,

@@ -1,5 +1,9 @@
 const COMPANY_WORDS =
-  /\b(INC|LLC|L\.?L\.?C\.?|INCORPORATED|LTD|LP|LLP|PLLC|PC|PA|CO|COMPANY|CORP|CORPORATION|CONSTRUCTION|BUILDERS?|ELECTRIC|ELECTRICAL|PLUMBING|ROOFING|SERVICES?)\b/i;
+  /\b(INC|LLC|L\.?L\.?C\.?|INCORPORATED|LTD|LP|LLP|PLLC|PC|PA|CO|COMPANY|CORP|CORPORATION|CONSTRUCTION|BUILDERS?|ELECTRIC|ELECTRICAL|PLUMBING|ROOFING|SERVICES?|ADVISORS?|ADVISORY|GROUP|ASSOCIATES|HOLDINGS|PARTNERS|ENTERPRISES|VENTURES|CAPITAL|MANAGEMENT|CONSULTING|HOSPITAL|CLINIC|PRACTICE|DIVISION|PROPERTIES|INVESTMENTS|SOLUTIONS)\b/i;
+
+/** Titles/suffixes stripped from a person name; never kept as first/last. */
+export const PERSON_HONORIFICS_SOURCE =
+  '\\b(REV|REVEREND|DR|DOCTOR|DVM|MD|DDS|DMD|ESQ|JR|SR|II|III|IV|PHD|PROF|PROFESSOR|MS|MRS|MR|MISS)\\b';
 
 const LEGAL_SUFFIX =
   /\b(THE|A|AN|LLC|L\s*L\s*C|INC|INCORPORATED|LTD|LP|LLP|PLLC|PC|PA|CO|COMPANY|CORP|CORPORATION)\b/gi;
@@ -27,6 +31,187 @@ export function normalizeCompanyName(name: string): string {
 
 export function hasCompanyWord(name: string): boolean {
   return COMPANY_WORDS.test(name || '');
+}
+
+const PLACE_NAMES = new Set(
+  [
+    'SAN DIEGO',
+    'SAN JOSE',
+    'LOS ANGELES',
+    'SAN FRANCISCO',
+    'SANTA ANA',
+    'SANTA ROSA',
+    'SANTA CLARA',
+    'SANTA CRUZ',
+    'SANTA MARIA',
+    'SANTA MONICA',
+    'SANTA BARBARA',
+    'SAN MATEO',
+    'SAN LEANDRO',
+    'SAN RAFAEL',
+    'SAN MARCOS',
+    'SAN CLEMENTE',
+    'EL CAJON',
+    'EL MONTE',
+    'DEL MAR',
+    'LA JOLLA',
+    'LA MESA',
+    'LONG BEACH',
+    'NEWPORT BEACH',
+    'HUNTINGTON BEACH',
+    'REDWOOD CITY',
+    'MOUNTAIN VIEW',
+    'PALO ALTO',
+    'CULVER CITY',
+    'FOUNTAIN VALLEY',
+    'MORENO VALLEY',
+    'CHULA VISTA',
+    'SIMI VALLEY',
+    'THOUSAND OAKS',
+    'RANCHO CUCAMONGA',
+    'RANCHO CORDOVA',
+    'WEST COVINA',
+    'COSTA MESA',
+    'LAGUNA NIGUEL',
+    'MISSION VIEJO',
+    'GARDEN GROVE',
+    'CASTLE ROCK',
+    'COLORADO SPRINGS',
+    'NEW YORK',
+    'STATEN ISLAND',
+  ].map((s) => s.toUpperCase()),
+);
+
+export function stripPersonHonorifics(name: string): string {
+  return String(name || '')
+    .replace(new RegExp(PERSON_HONORIFICS_SOURCE, 'gi'), ' ')
+    .replace(/\./g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** True when the whole string is a city/place, not a person. */
+export function isPlaceName(name: string, extraPlaces: Array<string | null | undefined> = []): boolean {
+  const key = stripPersonHonorifics(name)
+    .toUpperCase()
+    .replace(/[^A-Z ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!key) return false;
+  if (PLACE_NAMES.has(key)) return true;
+  const noState = key.replace(/\s+\b[A-Z]{2}\b$/, '').trim();
+  if (noState !== key && PLACE_NAMES.has(noState)) return true;
+  for (const extra of extraPlaces) {
+    const place = String(extra || '')
+      .toUpperCase()
+      .replace(/[^A-Z ]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (place && (key === place || noState === place)) return true;
+  }
+  return false;
+}
+
+export interface OfficerNameVerdict {
+  ok: boolean;
+  first_name: string | null;
+  last_name: string | null;
+  full_name: string;
+  review_flag: boolean;
+  reason?: 'place' | 'company' | 'partial' | 'invalid';
+}
+
+/**
+ * Officer / owner person names for waterfall_ready. Strips REV/DR/DVM/etc.
+ * Rejects cities, company words, and missing last names (those are flagged).
+ */
+export function validateOfficerPersonName(
+  raw: string,
+  extraPlaces: Array<string | null | undefined> = [],
+): OfficerNameVerdict {
+  const stripped = stripPersonHonorifics(raw);
+  const full_name = stripped.replace(/\s+/g, ' ').trim();
+  const empty: OfficerNameVerdict = {
+    ok: false,
+    first_name: null,
+    last_name: null,
+    full_name: full_name || String(raw || '').trim(),
+    review_flag: true,
+    reason: 'invalid',
+  };
+  if (!full_name) return empty;
+  if (isPlaceName(full_name, extraPlaces)) {
+    return { ...empty, full_name, reason: 'place' };
+  }
+  if (hasCompanyWord(full_name)) {
+    return { ...empty, full_name, reason: 'company' };
+  }
+  const split = full_name.includes(',') ? parseBoardPersonName(full_name) : splitPersonName(full_name);
+  if (!split.last_name || !split.first_name || split.review_flag) {
+    return {
+      ok: false,
+      first_name: split.first_name,
+      last_name: split.last_name,
+      full_name: split.full_name_raw || full_name,
+      review_flag: true,
+      reason: 'partial',
+    };
+  }
+  if (isPlaceName(`${split.first_name} ${split.last_name}`, extraPlaces)) {
+    return { ...empty, full_name: split.full_name_raw, reason: 'place' };
+  }
+  return {
+    ok: true,
+    first_name: split.first_name,
+    last_name: split.last_name,
+    full_name: split.full_name_raw || full_name,
+    review_flag: false,
+  };
+}
+
+/**
+ * SOS search string: drop DBA, dash/pipe marketing, Division, Dr…DVM, practice blurbs.
+ * Registry truncates at 49 characters.
+ */
+export function coreCompanySearchName(name: string): string {
+  let s = String(name || '').replace(/\s+/g, ' ').trim();
+  s = s.replace(/\bD\s*\.?\s*B\s*\.?\s*A\.?\s+.+$/i, ' ').trim();
+  s = s.split(/\s*[|–—]\s*/)[0] || s;
+  s = s.split(/\s+-\s+/)[0] || s;
+  s = s.replace(/\bdivisions?\b.*$/i, ' ').trim();
+  s = s.replace(/\s+\bdr\.?\s+.+$/i, ' ').trim();
+  s = s.replace(/\s+\bdvm\b.*$/i, ' ').trim();
+  s = s
+    .replace(
+      /\b(a veterinary practice|animal hospital|pet hospital|veterinary clinic|dental practice|family dentistry|wealth management|orthodontics)\b.*$/i,
+      ' ',
+    )
+    .trim();
+  return s.replace(/\s+/g, ' ').trim().slice(0, 49);
+}
+
+/** Shorter follow-up query: legal suffixes off, at most three content tokens. */
+export function shortenedCompanySearchName(name: string): string {
+  const core = coreCompanySearchName(name);
+  const tokens = normalizeCompanyName(core).split(' ').filter(Boolean);
+  if (tokens.length <= 3) return tokens.join(' ').slice(0, 49);
+  return tokens.slice(0, 3).join(' ').slice(0, 49);
+}
+
+export function companySearchQueries(name: string): string[] {
+  const core = coreCompanySearchName(name);
+  const short = shortenedCompanySearchName(name);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const q of [core, short]) {
+    const key = q.replace(/\s+/g, ' ').trim();
+    if (!key) continue;
+    const id = key.toUpperCase();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(key);
+  }
+  return out;
 }
 
 export function tokenizeCapsName(raw: string): string[] {
@@ -64,7 +249,7 @@ export function splitPersonName(raw: string): SplitPersonName {
   if (tokens.length >= 4) {
     return { first_name: null, last_name: null, full_name_raw, review_flag: true };
   }
-  return { first_name: null, last_name: tokens[0] || null, full_name_raw, review_flag: tokens.length !== 1 };
+  return { first_name: null, last_name: tokens[0] || null, full_name_raw, review_flag: true };
 }
 
 /**

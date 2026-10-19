@@ -1,9 +1,12 @@
 import {
   hasCompanyWord,
   htmlToText,
+  isPlaceName,
   isRegistryAgentName,
   parseBoardPersonName,
   splitPersonName,
+  stripPersonHonorifics,
+  validateOfficerPersonName,
 } from '../names.js';
 import type { BoardSource, OwnerConfidence, OwnerPerson, OwnerRole } from '../types.js';
 import type { NameLookupInput, WaterfallOwnerHit } from './types.js';
@@ -49,7 +52,7 @@ const US_STATE_CODES = new Set(
 );
 
 const TITLE_STRIP_TOKENS = new Set(
-  'president vice secretary treasurer director manager member ceo cfo coo vp governor partner principal owner founder organizer officer chief executive coach'
+  'president vice secretary treasurer director manager member ceo cfo coo vp governor partner principal owner founder organizer officer chief executive coach rev reverend dr doctor dvm md dds dmd esq jr sr ii iii iv phd prof professor ms mrs mr miss'
     .split(' '),
 );
 
@@ -124,7 +127,7 @@ function keepNameToken(token: string): 'keep' | 'strip' | 'reject' {
  * Review-text names return null.
  */
 export function scrubCapitalizedPersonName(raw: string): string | null {
-  const cleaned = cleanName(raw);
+  const cleaned = cleanName(stripPersonHonorifics(raw));
   if (!cleaned || cleaned.length > 80) return null;
   if (SKIP_NAME.test(cleaned)) return null;
   const comma = cleaned.includes(',');
@@ -153,8 +156,9 @@ function usablePersonName(name: string): boolean {
   if (!scrubbed) return false;
   if (isRegistryAgentName(scrubbed)) return false;
   if (hasCompanyWord(scrubbed)) return false;
+  if (isPlaceName(scrubbed)) return false;
   if (/^\d/.test(scrubbed)) return false;
-  return true;
+  return validateOfficerPersonName(scrubbed).ok;
 }
 
 function pushEntry(
@@ -249,24 +253,29 @@ export function rosterToPeople(
   source: BoardSource,
   sourceUrl: string,
   confidence: OwnerConfidence,
+  extraPlaces: Array<string | null | undefined> = [],
 ): OwnerPerson[] {
   const people: OwnerPerson[] = [];
   const seen = new Set<string>();
   for (const row of entries) {
     if (row.role === 'registered_agent') continue;
+    const verdict = validateOfficerPersonName(row.name, extraPlaces);
+    if (verdict.reason === 'place' || verdict.reason === 'company' || verdict.reason === 'invalid') continue;
     const split = row.name.includes(',') ? parseBoardPersonName(row.name) : splitPersonName(row.name);
-    const key = `${split.first_name || ''}|${split.last_name || ''}|${split.full_name_raw}`.toLowerCase();
+    const first = verdict.ok ? verdict.first_name : split.first_name;
+    const last = verdict.ok ? verdict.last_name : split.last_name;
+    const key = `${first || ''}|${last || ''}|${verdict.full_name || split.full_name_raw}`.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     people.push({
-      first_name: split.first_name,
-      last_name: split.last_name,
-      full_name_raw: split.full_name_raw,
+      first_name: first,
+      last_name: last,
+      full_name_raw: verdict.full_name || split.full_name_raw,
       role: row.role,
       source,
       source_url: sourceUrl,
       confidence,
-      review_flag: split.review_flag || undefined,
+      review_flag: verdict.ok ? split.review_flag || undefined : true,
     });
   }
   return people;
@@ -278,10 +287,15 @@ export function hitsFromRoster(
   source: BoardSource,
   sourceUrl: string,
   matchMethod?: 'exact' | 'substring' | 'trigram' | 'license',
+  opts?: { cityMatch?: boolean },
 ): WaterfallOwnerHit[] {
-  const people = rosterToPeople(entries, source, sourceUrl, ownerConfidenceFromMatch(matchMethod));
+  let confidence = ownerConfidenceFromMatch(matchMethod);
+  if (matchMethod === 'trigram' && opts?.cityMatch) confidence = 'medium';
+  const people = rosterToPeople(entries, source, sourceUrl, confidence, [input.city]);
   return people.map((p) => {
     const hit = waterfallHitFromPerson(input, p, null);
+    hit.match_method = matchMethod;
+    hit.city_match = Boolean(opts?.cityMatch);
     if (p.role === 'member') hit.title = /managing/i.test(entries.find((e) => e.name === p.full_name_raw)?.title || '')
       ? 'Managing Member'
       : 'Member';

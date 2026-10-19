@@ -1,12 +1,14 @@
 import { isChallengePage } from '../http.js';
 import {
   hasCompanyWord,
+  isPlaceName,
   isRegistryAgentName,
   namesMatchNormalized,
   normalizeCompanyName,
   normalizeState,
   splitPersonName,
   trigramSimilarity,
+  validateOfficerPersonName,
 } from '../names.js';
 import type { OwnerConfidence, OwnerRole } from '../types.js';
 import { catalogByCode } from './catalog.js';
@@ -178,7 +180,9 @@ function usablePersonName(name: string, company: string, input?: NameLookupInput
   if (!cleaned) return false;
   if (isRegistryAgentName(cleaned)) return false;
   if (hasCompanyWord(cleaned)) return false;
+  if (isPlaceName(cleaned, [input?.city])) return false;
   if (namesMatchNormalized(cleaned, company)) return false;
+  if (!validateOfficerPersonName(cleaned, [input?.city]).ok) return false;
   return true;
 }
 

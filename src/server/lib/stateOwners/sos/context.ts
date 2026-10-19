@@ -56,6 +56,12 @@ export interface LookupContext {
   caBatchCheckpointPath?: string;
   /** Dump per-step HTTP status from the Playwright run (CLI --ca-debug). */
   caBatchDebug?: boolean;
+  /** Skip Playwright and run dz_omar + web-fetch only. Default for --ca-batch. */
+  caHybridOnly?: boolean;
+  /** Opt into the Incapsula-blocked Playwright UI path. */
+  caPlaywright?: boolean;
+  /** dz_omar maxResultsPerQuery (default 3). */
+  caHybridMaxResultsPerQuery?: number;
   /** Fixture dataset items — skip the live Playwright run. */
   caBatchItems?: Array<{
     company_name: string;
@@ -67,6 +73,7 @@ export interface LookupContext {
     business_name?: string;
     match_method?: 'exact' | 'substring' | 'trigram';
     match_score?: number;
+    city_match?: boolean;
     source_url?: string;
     document_id?: string;
     officers_text?: string;

@@ -130,6 +130,7 @@ function asDatasetItem(raw: unknown, fallback: CaBatchCompany): CaBatchDatasetIt
     business_name: row.business_name ? String(row.business_name) : undefined,
     match_method,
     match_score: typeof row.match_score === 'number' ? row.match_score : undefined,
+    city_match: row.city_match === true,
     source_url: row.source_url ? String(row.source_url) : undefined,
     document_id: row.document_id ? String(row.document_id) : undefined,
     officers_text: row.officers_text ? String(row.officers_text) : undefined,
@@ -191,7 +192,9 @@ export async function mapCaBatchItemToResult(
 
   const entries = parseSiOfficerTable(officersText);
   const sourceUrl = item.source_url || `${CA_BATCH_UI}/${encodeURIComponent(entityId)}`;
-  const officers = hitsFromRoster(input, entries, 'ca_bizfile', sourceUrl, item.match_method);
+  const officers = hitsFromRoster(input, entries, 'ca_bizfile', sourceUrl, item.match_method, {
+    cityMatch: item.city_match === true,
+  });
   if (officers.length) {
     return {
       people: officers,
@@ -257,8 +260,32 @@ export async function runCaBatch(
     saveCaBatchCheckpoint(checkpointPath, checkpoint);
   } else if (ctx?.live !== false && ctx?.apifyEnabled !== false) {
     const remaining = companies.filter((c) => !caBatchItemComplete(checkpoint.items[caBatchCompanyKey(c.company_name, c.city)]));
+    const hybridOnly = ctx?.caPlaywright !== true;
     if (!remaining.length && companies.length) {
       /* resume: everything already checkpointed */
+    } else if (hybridOnly) {
+      const hybridEst = estimateCaHybridUsd(remaining.length || companies.length);
+      if (spend.wouldExceed(hybridEst)) {
+        spend.refuse();
+        empty.refused = true;
+        empty.results = await Promise.all(
+          inputs.map((row) => mapCaBatchItemToResult(row, checkpoint.items[caBatchCompanyKey(row.company_name, row.city)], ctx)),
+        );
+        return empty;
+      }
+      const hybrid = await runCaHybrid(remaining, ctx);
+      empty.runs += hybrid.runs;
+      empty.usd = Number((empty.usd + hybrid.usd).toFixed(4));
+      empty.cu += hybrid.cu;
+      empty.proxyGb = Number((empty.proxyGb + hybrid.proxyGb).toFixed(6));
+      empty.hybridUsed = true;
+      empty.perCompanyUsd = hybrid.perCompanyUsd;
+      for (const item of hybrid.items) {
+        const key = caBatchCompanyKey(item.company_name, item.city);
+        checkpoint.items[key] = item;
+      }
+      saveCaBatchCheckpoint(checkpointPath, checkpoint);
+      if (hybrid.refused) empty.refused = true;
     } else {
       const estimate = estimateCaBatchUsd(remaining.length || companies.length);
       if (spend.wouldExceed(estimate)) {

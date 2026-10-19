@@ -1,4 +1,4 @@
-import { isRegistryAgentName, splitPersonName } from '../names.js';
+import { isRegistryAgentName, splitPersonName, validateOfficerPersonName } from '../names.js';
 import type { BoardSource, CoverageReason, OwnerConfidence, OwnerPerson, OwnerRole } from '../types.js';
 import type { NameLookupInput, WaterfallOwnerHit } from './types.js';
 
@@ -28,6 +28,7 @@ export function waterfallHitFromPerson(
     source: person.source,
     role: person.role,
     coverage_reason: coverage,
+    review_flag: person.review_flag,
   };
 }
 
@@ -66,12 +67,19 @@ export function isWaterfallReady(hit: WaterfallOwnerHit): boolean {
     return false;
   }
   if (!hit.source_url) return false;
+  if (hit.review_flag) return false;
+  if (!hit.first_name || !hit.last_name) return false;
+  if (!validateOfficerPersonName(`${hit.first_name} ${hit.last_name}`).ok) return false;
   if (hit.source === 'serper' && hit.confidence !== 'high') return false;
-  return Boolean(hit.first_name || hit.last_name);
+  if (hit.confidence === 'low') return false;
+  if (hit.source === 'ca_bizfile' && hit.match_method === 'trigram' && hit.city_match !== true) {
+    return false;
+  }
+  return true;
 }
 
 export function ownerConfidenceFromMatch(method: 'exact' | 'substring' | 'trigram' | 'license' | undefined): OwnerConfidence {
-  if (method === 'exact' || method === 'license') return 'high';
+  if (method === 'trigram') return 'low';
   if (method === 'substring') return 'medium';
-  return 'low';
+  return 'high';
 }

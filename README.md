@@ -67,18 +67,21 @@ Required CSV columns: `company` (or `company_name`), `city`, `state`.
 | `--live false` | Offline / fixture mode (no SOS HTTP) |
 | `--include-agents` | Include registered-agent rows (still not waterfall-ready) |
 | `--states CA,IL` | Limit states |
-| `--ca-batch` | CA SOS batched Playwright (Incapsula once, then type/submit search in that session) |
+| `--ca-batch` | CA SOS batched lookup (hybrid dz_omar + web-fetch by default) |
+| `--ca-hybrid-only` | Skip Playwright (implied by `--ca-batch` unless `--ca-playwright`) |
+| `--ca-playwright` | Opt into the Incapsula-blocked Playwright UI path |
+| `--ca-max-results N` | dz_omar maxResultsPerQuery (default 3) |
 | `--ca-debug` | Dump per-step HTTP status for `--ca-batch` (search / history / SI) |
 | `--checkpoint path` | Resume file for `--ca-batch` |
 | `--summary path` | Summary JSON path (default `<out>.summary.json`) |
 
 Summary prints hit rate per state, officer vs agent-only counts, Serper credits, Apify $ / CU / residential GB. Permit/license lookup is unchanged (`match_state_owners`).
 
-CA batched probe (Apify residential only). Smoke **3** rows with `--ca-debug` and `APIFY_MAX_USD=2` first. Use a **new** checkpoint. If the UI search box never appears, the job falls back to dz_omar search+history + web-fetch SI PDFs.
+CA batched probe (Apify residential only). Smoke **3** rows with `--ca-hybrid-only`, `--ca-debug`, and `APIFY_MAX_USD=2`. Use a **new** checkpoint. Playwright UI stays opt-in (`--ca-playwright`).
 
 ```bash
 export APIFY_TOKEN=... APIFY_MAX_USD=2
-npx tsx scripts/owner_lookup_sample.ts --in ca-3.csv --out ca-3-results.csv --ca-batch --states CA --no-serper --ca-debug --checkpoint /tmp/ca-batch-3.json
+npx tsx scripts/owner_lookup_sample.ts --in ca-3.csv --out ca-3-results.csv --ca-batch --ca-hybrid-only --states CA --no-serper --ca-debug --checkpoint /tmp/ca-batch-3.json
 ```
 
 Claude connector: `https://workspace-production-4702.up.railway.app/mcp` (authless).

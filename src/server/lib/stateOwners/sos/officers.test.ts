@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { parseOfficerRoster, rosterToPeople } from './officers.js';
+import { parseOfficerRoster, rosterToPeople, hitsFromRoster } from './officers.js';
+import { isWaterfallReady } from './waterfall.js';
 
 describe('parseOfficerRoster', () => {
   it('reads SI-550 labeled officers and skips registered agents', () => {
@@ -59,5 +60,27 @@ PAT MORGAN`;
     );
     assert.equal(people[0]?.first_name, 'JANE');
     assert.equal(people[0]?.last_name, 'SAMPLE');
+  });
+
+  it('rejects city and company-suffix names and strips honorifics', () => {
+    assert.equal(parseOfficerRoster('CEO\nSAN DIEGO').length, 0);
+    assert.equal(parseOfficerRoster('CEO\nACME ADVISORS LLC').length, 0);
+    const rows = parseOfficerRoster('Chief Executive Officer: DR JANE SAMPLE DVM');
+    assert.equal(rows[0]?.name, 'JANE SAMPLE');
+  });
+
+  it('does not mark trigram matches waterfall_ready without a city match', () => {
+    const entries = [{ name: 'JANE SAMPLE', title: 'CEO', role: 'officer' as const }];
+    const input = { company_name: 'Sample Builders LLC', city: 'Oakland', state: 'CA' };
+    const noCity = hitsFromRoster(input, entries, 'ca_bizfile', 'https://example.test/1', 'trigram', {
+      cityMatch: false,
+    });
+    assert.equal(isWaterfallReady(noCity[0]!), false);
+    const withCity = hitsFromRoster(input, entries, 'ca_bizfile', 'https://example.test/1', 'trigram', {
+      cityMatch: true,
+    });
+    assert.equal(isWaterfallReady(withCity[0]!), true);
+    const partial = hitsFromRoster(input, [{ name: 'JANE', title: 'CEO', role: 'officer' }], 'ca_bizfile', 'https://example.test/1', 'exact');
+    assert.equal(partial.some((p) => isWaterfallReady(p)), false);
   });
 });

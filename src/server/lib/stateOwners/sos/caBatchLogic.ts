@@ -26,6 +26,7 @@ export interface CaBatchPick {
   entity: CaBatchEntity;
   score: number;
   method: 'exact' | 'substring' | 'trigram';
+  city_match: boolean;
 }
 
 export interface CaBatchCompany {
@@ -44,6 +45,7 @@ export interface CaBatchDatasetItem {
   business_name?: string;
   match_method?: 'exact' | 'substring' | 'trigram';
   match_score?: number;
+  city_match?: boolean;
   source_url?: string;
   document_id?: string;
   officers_text?: string;
@@ -105,6 +107,24 @@ export function caBatchNormalizeName(name: string): string {
     .replace(/\b(THE|A|AN|LLC|L\s*L\s*C|INC|INCORPORATED|LTD|LP|LLP|PLLC|PC|PA|CO|COMPANY|CORP|CORPORATION)\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** Drop DBA / dash-pipe marketing / Division / Dr…DVM before SOS search. Keep isomorphic (no names.ts). */
+export function caBatchCoreSearchName(name: string): string {
+  let s = String(name || '').replace(/\s+/g, ' ').trim();
+  s = s.replace(/\bD\s*\.?\s*B\s*\.?\s*A\.?\s+.+$/i, ' ').trim();
+  s = s.split(/\s*[|–—]\s*/)[0] || s;
+  s = s.split(/\s+-\s+/)[0] || s;
+  s = s.replace(/\bdivisions?\b.*$/i, ' ').trim();
+  s = s.replace(/\s+\bdr\.?\s+.+$/i, ' ').trim();
+  s = s.replace(/\s+\bdvm\b.*$/i, ' ').trim();
+  s = s
+    .replace(
+      /\b(a veterinary practice|animal hospital|pet hospital|veterinary clinic|dental practice|family dentistry|wealth management|orthodontics)\b.*$/i,
+      ' ',
+    )
+    .trim();
+  return s.replace(/\s+/g, ' ').trim().slice(0, 49);
 }
 
 export function caBatchTrigram(a: string, b: string): number {
@@ -216,7 +236,7 @@ export function caBatchMapRow(raw: unknown): CaBatchEntity | null {
     EntityID: id || undefined,
     EntityName: name || undefined,
     ForeignEntityName: caBatchPickString(row, ['ForeignEntityName', 'DBA', 'DBA_NAME']),
-    EntityCity: caBatchPickString(row, ['EntityCity', 'CITY']) || loc.city,
+    EntityCity: caBatchPickString(row, ['EntityCity', 'CITY', 'city']) || loc.city,
     MailingCity: caBatchPickString(row, ['MailingCity']) || loc.city,
     AgentCity: agent.city,
     AgentName: agent.name,
@@ -261,7 +281,7 @@ export function caBatchPickEntity(
   city: string | null | undefined,
   rows: CaBatchEntity[],
 ): CaBatchPick | null {
-  const key = caBatchNormalizeName(companyName);
+  const key = caBatchNormalizeName(caBatchCoreSearchName(companyName) || companyName);
   if (!key || !rows || !rows.length) return null;
   const wantCity = String(city || '').trim().toLowerCase();
   let best: CaBatchPick | null = null;
@@ -278,8 +298,14 @@ export function caBatchPickEntity(
         score = 100;
         method = 'exact';
       } else if (hit.includes(key) || key.includes(hit)) {
-        score = 80;
-        method = 'substring';
+        const shorter = key.length <= hit.length ? key : hit;
+        const tokenCount = shorter.split(' ').filter(Boolean).length;
+        const itemCity = caBatchEntityCity(entity).toLowerCase();
+        const cityOk = Boolean(wantCity && itemCity && itemCity === wantCity);
+        if (tokenCount >= 2 || cityOk) {
+          score = 80;
+          method = 'substring';
+        }
       } else {
         const tri = caBatchTrigram(key, hit);
         if (tri >= CA_BATCH_MIN_TRIGRAM) {
@@ -293,7 +319,13 @@ export function caBatchPickEntity(
       }
       if (score > (best?.score || 0)) {
         second = best?.score || 0;
-        best = { entity, score, method };
+        const itemCity = caBatchEntityCity(entity).toLowerCase();
+        best = {
+          entity,
+          score,
+          method,
+          city_match: Boolean(wantCity && itemCity && itemCity === wantCity),
+        };
       } else if (score > second) {
         second = score;
       }

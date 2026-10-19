@@ -23,6 +23,7 @@ import {
   SERPER_QUERIES_PER_ROW,
   SERPER_USD_PER_QUERY,
   estimateCaBatchUsd,
+  estimateCaHybridUsd,
   estimateSerperCredits,
   estimateSerperUsd,
 } from '../lib/stateOwners/sos/spend.js';
@@ -60,18 +61,31 @@ export interface LookupBusinessOwnerOpts {
   ca_batch?: boolean;
   /** Dump per-step HTTP status from the CA Playwright run. */
   ca_debug?: boolean;
+  /** Skip Playwright; run dz_omar + web-fetch. Default true with ca_batch. */
+  ca_hybrid_only?: boolean;
+  /** Opt into the Incapsula-blocked Playwright UI path. */
+  ca_playwright?: boolean;
+  /** dz_omar maxResultsPerQuery (default 3). */
+  ca_max_results?: number;
 }
 
 function emptyStateStats() {
   return { attempted: 0, named: 0, agent_only: 0, hit_rate: 0 };
 }
 
-export function estimateApifyUsd(inputs: NameLookupInput[], opts?: { ca_batch?: boolean }): number {
+export function estimateApifyUsd(
+  inputs: NameLookupInput[],
+  opts?: { ca_batch?: boolean; ca_hybrid_only?: boolean; ca_max_results?: number },
+): number {
   const catalog = catalogByCode();
   if (opts?.ca_batch) {
     const ca = inputs.filter((row) => normalizeState(row.state) === 'CA');
     const other = inputs.filter((row) => normalizeState(row.state) !== 'CA');
-    return Number((estimateCaBatchUsd(ca.length) + estimateApifyUsd(other)).toFixed(2));
+    const caEst =
+      opts.ca_hybrid_only === false
+        ? estimateCaBatchUsd(ca.length)
+        : estimateCaHybridUsd(ca.length, opts.ca_max_results);
+    return Number((caEst + estimateApifyUsd(other)).toFixed(2));
   }
   let blocked = 0;
   for (const row of inputs) {
@@ -223,6 +237,9 @@ async function runLookupJob(
     includeAgents: opts.include_agents === true || opts.context?.includeAgents === true,
     live: opts.context?.live ?? true,
     caBatchDebug: opts.ca_debug === true || opts.context?.caBatchDebug === true,
+    caPlaywright: opts.ca_playwright === true || opts.context?.caPlaywright === true,
+    caHybridOnly: opts.ca_playwright === true ? false : opts.ca_hybrid_only !== false,
+    caHybridMaxResultsPerQuery: opts.ca_max_results ?? opts.context?.caHybridMaxResultsPerQuery,
   });
   const lanes = Math.max(1, Math.min(opts.concurrency ?? SOS_HTTP_LANES, 8));
   const samples: BusinessOwnerNamelessSample[] = [];
@@ -290,7 +307,14 @@ export async function lookupBusinessOwner(opts: LookupBusinessOwnerOpts): Promis
     const caBatch = opts.ca_batch === true;
     const caCount = rows.filter((row) => normalizeState(row.state) === 'CA').length;
     const serperN = caBatch ? Math.max(0, (rows.length ? rows.length - caCount : n)) : n;
-    const apifyUsd = rows.length ? estimateApifyUsd(rows, { ca_batch: caBatch }) : caBatch ? estimateCaBatchUsd(n) : 0;
+    const hybridOnly = opts.ca_playwright === true ? false : opts.ca_hybrid_only !== false;
+    const apifyUsd = rows.length
+      ? estimateApifyUsd(rows, { ca_batch: caBatch, ca_hybrid_only: hybridOnly, ca_max_results: opts.ca_max_results })
+      : caBatch
+        ? hybridOnly
+          ? estimateCaHybridUsd(n, opts.ca_max_results)
+          : estimateCaBatchUsd(n)
+        : 0;
     const serperCredits = estimateSerperCredits(serperN);
     const serperUsd = estimateSerperUsd(serperN);
     const snapshot = emptySnapshot(jobId, opts, 0, apifyUsd, serperCredits, serperUsd);
@@ -350,7 +374,11 @@ export async function lookupBusinessOwner(opts: LookupBusinessOwnerOpts): Promis
     jobId,
     { ...opts, dry_run: dryRun },
     rows.length,
-    estimateApifyUsd(rows, { ca_batch: caBatch }),
+    estimateApifyUsd(rows, {
+      ca_batch: caBatch,
+      ca_hybrid_only: opts.ca_playwright === true ? false : opts.ca_hybrid_only !== false,
+      ca_max_results: opts.ca_max_results,
+    }),
     estimateSerperCredits(serperN),
     estimateSerperUsd(serperN),
   );

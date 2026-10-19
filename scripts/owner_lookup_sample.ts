@@ -18,7 +18,7 @@ import {
 import { runCaBatch } from '../src/server/lib/stateOwners/sos/caBatch.ts';
 import { resolveNameLookup } from '../src/server/lib/stateOwners/sos/namePath.ts';
 import { mapPool } from '../src/server/lib/stateOwners/sos/pool.ts';
-import { ApifySpendTracker, SerperCreditTracker, estimateCaBatchUsd } from '../src/server/lib/stateOwners/sos/spend.ts';
+import { ApifySpendTracker, SerperCreditTracker, estimateCaBatchUsd, estimateCaHybridUsd } from '../src/server/lib/stateOwners/sos/spend.ts';
 import { normalizeState } from '../src/server/lib/stateOwners/names.ts';
 
 function arg(flag: string, fallback?: string): string | undefined {
@@ -45,7 +45,10 @@ Options:
   --include-agents     Include registered-agent people (still not waterfall-ready)
   --no-serper          Skip google.serper.dev (default: Serper-first for every state)
   --no-apify           Never call Apify Playwright (fallback only after Serper miss)
-  --ca-batch           CA SOS batched Playwright: Incapsula once, then hundreds of companies
+  --ca-batch           CA SOS batched lookup (hybrid dz_omar + web-fetch by default)
+  --ca-hybrid-only     Skip Playwright (implied by --ca-batch unless --ca-playwright)
+  --ca-playwright      Opt into the Incapsula-blocked Playwright UI path
+  --ca-max-results N   dz_omar maxResultsPerQuery (default 3)
   --ca-debug           With --ca-batch: dump per-step HTTP status (search/history/SI)
   --checkpoint <path>  Resume file for --ca-batch (default: tmpdir)
   --il-dta-dir <path>  Illinois Data Transparency Act files (or env IL_DTA_DIR)
@@ -54,9 +57,9 @@ Options:
 Env: SERPER_API_KEY, APIFY_TOKEN, APIFY_MAX_USD, IL_DTA_DIR, CA_BATCH_CHECKPOINT
 No Supabase writes. Permit/license path is unchanged (match_state_owners).
 
-3-company CA smoke (sticky Chrome session; hybrid fallback if UI stays blocked):
+3-company CA smoke (hybrid-only; skip Playwright):
   export APIFY_TOKEN=... APIFY_MAX_USD=2
-  npx tsx scripts/owner_lookup_sample.ts --in ca-3.csv --out ca-3-results.csv --ca-batch --states CA --no-serper --ca-debug --checkpoint /tmp/ca-batch-3.json
+  npx tsx scripts/owner_lookup_sample.ts --in ca-3.csv --out ca-3-results.csv --ca-batch --ca-hybrid-only --states CA --no-serper --ca-debug --checkpoint /tmp/ca-batch-3.json
 `);
 }
 
@@ -80,7 +83,9 @@ async function main(): Promise<void> {
   const live = arg('--live') === 'false' || hasFlag('--offline') ? false : true;
   const spend = new ApifySpendTracker();
   const serper = new SerperCreditTracker();
-  const caBatch = hasFlag('--ca-batch');
+  const caBatch = hasFlag('--ca-batch') || hasFlag('--ca-hybrid-only');
+  const caPlaywright = hasFlag('--ca-playwright');
+  const maxResultsRaw = Number(arg('--ca-max-results'));
   const ctx = defaultLookupContext({
     live,
     includeAgents: hasFlag('--include-agents'),
@@ -89,6 +94,9 @@ async function main(): Promise<void> {
     ilDtaDir: arg('--il-dta-dir') || process.env.IL_DTA_DIR || null,
     caBatchCheckpointPath: arg('--checkpoint') || undefined,
     caBatchDebug: hasFlag('--ca-debug'),
+    caPlaywright,
+    caHybridOnly: !caPlaywright,
+    caHybridMaxResultsPerQuery: Number.isFinite(maxResultsRaw) && maxResultsRaw > 0 ? maxResultsRaw : undefined,
     spend,
     serper,
   });
@@ -147,7 +155,11 @@ async function main(): Promise<void> {
     ca_batch: caBatch,
     apify_compute_units: Number(spend.computeUnits.toFixed(4)),
     apify_proxy_gb: Number(spend.proxyGb.toFixed(4)),
-    apify_estimate_usd: caBatch ? estimateCaBatchUsd(caRows.length) : summary.apify_usd_spent,
+    apify_estimate_usd: caBatch
+      ? caPlaywright
+        ? estimateCaBatchUsd(caRows.length)
+        : estimateCaHybridUsd(caRows.length, ctx.caHybridMaxResultsPerQuery)
+      : summary.apify_usd_spent,
   };
   writeFileSync(summaryPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
   process.stdout.write(

@@ -1230,7 +1230,22 @@ NEXT: get_business_owner_job(job_id). Local CSV probe: npx tsx scripts/owner_loo
         ca_batch: z
           .boolean()
           .optional()
-          .describe('CA only: one Playwright run, Incapsula once, then a batch of companies (search + SI PDF). Skips Serper for CA rows. Enforces APIFY_MAX_USD; reports CU + residential proxy GB.'),
+          .describe('CA only: batched SOS lookup. Defaults to hybrid (dz_omar + web-fetch SI PDFs). Skips Serper for CA rows. Enforces APIFY_MAX_USD; reports CU + residential proxy GB.'),
+        ca_hybrid_only: z
+          .boolean()
+          .optional()
+          .describe('Default true with ca_batch: skip Playwright (Incapsula-blocked) and run dz_omar search+history plus web-fetch SI PDFs.'),
+        ca_playwright: z
+          .boolean()
+          .optional()
+          .describe('Opt into the Playwright UI path (usually blocked). Hybrid still runs if the search box never appears.'),
+        ca_max_results: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .optional()
+          .describe('dz_omar maxResultsPerQuery. Default 3.'),
         ca_debug: z
           .boolean()
           .optional()

@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  companySearchQueries,
+  coreCompanySearchName,
   hasCompanyWord,
   htmlToText,
   isNycCity,
+  isPlaceName,
   labeledValue,
   looksLikeSolePropPerson,
   namesMatchNormalized,
@@ -17,6 +20,7 @@ import {
   splitPersonName,
   splitLegalAndDba,
   trigramSimilarity,
+  validateOfficerPersonName,
 } from './names.js';
 import { parseNyOpenDataJson } from './nyOpenData.js';
 import { parsePaOpenDataJson } from './paOpenData.js';
@@ -63,6 +67,50 @@ describe('splitPersonName', () => {
     const split = splitPersonName('MARY ELLEN ANN GARCIA');
     assert.equal(split.first_name, null);
     assert.equal(split.review_flag, true);
+  });
+
+  it('flags a single token as a partial name', () => {
+    const split = splitPersonName('JANE');
+    assert.equal(split.first_name, null);
+    assert.equal(split.last_name, 'JANE');
+    assert.equal(split.review_flag, true);
+  });
+});
+
+describe('officer person name validation', () => {
+  it('strips honorifics and rejects cities, company words, and partial names', () => {
+    const ok = validateOfficerPersonName('REV DR JANE SAMPLE DVM');
+    assert.equal(ok.ok, true);
+    assert.equal(ok.first_name, 'JANE');
+    assert.equal(ok.last_name, 'SAMPLE');
+    assert.equal(ok.review_flag, false);
+
+    assert.equal(validateOfficerPersonName('SAN DIEGO').ok, false);
+    assert.equal(validateOfficerPersonName('SAN DIEGO').reason, 'place');
+    assert.equal(isPlaceName('LOS ANGELES'), true);
+
+    assert.equal(validateOfficerPersonName('ACME ADVISORS').ok, false);
+    assert.equal(validateOfficerPersonName('VALLEY GROUP LLC').reason, 'company');
+    assert.equal(hasCompanyWord('SMITH ADVISORS'), true);
+
+    const partial = validateOfficerPersonName('JANE');
+    assert.equal(partial.ok, false);
+    assert.equal(partial.reason, 'partial');
+    assert.equal(partial.review_flag, true);
+
+    assert.equal(validateOfficerPersonName('OAKLAND', ['Oakland']).reason, 'place');
+    assert.equal(validateOfficerPersonName('JANE SAMPLE', ['Oakland']).ok, true);
+  });
+});
+
+describe('company search query normalization', () => {
+  it('strips DBA, dash/pipe marketing, Division, and Dr…DVM tails', () => {
+    assert.equal(coreCompanySearchName('Valley Pets - Dr. Jane Smith DVM'), 'Valley Pets');
+    assert.equal(coreCompanySearchName('Acme Advisors | Wealth Management Division'), 'Acme Advisors');
+    assert.equal(coreCompanySearchName('Dr. Smith Veterinary'), 'Dr. Smith Veterinary');
+    const queries = companySearchQueries('Sample Builders LLC - Extra Marketing');
+    assert.equal(queries[0], 'Sample Builders LLC');
+    assert.ok(queries.includes('SAMPLE BUILDERS'));
   });
 });
 

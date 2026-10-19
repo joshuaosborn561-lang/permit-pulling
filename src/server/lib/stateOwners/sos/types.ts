@@ -58,6 +58,9 @@ export interface WaterfallOwnerHit {
   source: BoardSource;
   role: OwnerRole;
   coverage_reason: CoverageReason | null;
+  review_flag?: boolean;
+  match_method?: 'exact' | 'substring' | 'trigram' | 'license';
+  city_match?: boolean;
 }
 
 export interface NameLookupResult {
