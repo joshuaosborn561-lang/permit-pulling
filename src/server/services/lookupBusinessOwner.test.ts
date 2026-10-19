@@ -33,10 +33,10 @@ describe('lookup_business_owner scaffold', () => {
     assert.equal(first.ca_bizfile_api, 'unavailable_government_agencies_only');
     assert.ok(first.ca_apify_mid_usd > 100);
     assert.equal(out.apify_estimate_usd, 0);
-    assert.equal(first.serper_queries_per_row, 2);
-    assert.equal(first.serper_credits, 15359 * 2);
+    assert.equal(first.serper_queries_per_row, 5);
+    assert.equal(first.serper_credits, 15359 * 5);
     assert.ok(first.serper_usd > 0);
-    assert.equal(out.serper_estimate_credits, 15359 * 2);
+    assert.equal(out.serper_estimate_credits, 15359 * 5);
     assert.ok(APIFY_USD_PER_BLOCKED_LOOKUP > 0);
     const priced = await lookupBusinessOwner({
       estimate_only: true,
@@ -45,8 +45,8 @@ describe('lookup_business_owner scaffold', () => {
         { company_name: 'Sample HVAC LLC', city: 'Denver', state: 'CO' },
       ],
     });
-    assert.equal(priced.serper_estimate_credits, 4);
-    assert.equal(priced.serper_estimate_usd, 0.004);
+    assert.equal(priced.serper_estimate_credits, 10);
+    assert.equal(priced.serper_estimate_usd, 0.01);
   });
 
   it('records a dry job with counts only', async () => {

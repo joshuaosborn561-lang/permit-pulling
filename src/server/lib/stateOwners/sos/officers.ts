@@ -13,6 +13,8 @@ export interface RosterEntry {
   name: string;
   title: string;
   role: OwnerRole;
+  /** True when the name sat on a labeled officer/title row, not review prose. */
+  labeled?: boolean;
 }
 
 const TITLE_ROLE: Array<{ re: RegExp; role: OwnerRole }> = [
@@ -26,13 +28,63 @@ const TITLE_ROLE: Array<{ re: RegExp; role: OwnerRole }> = [
 const TITLE =
   'Chief\\s+Executive\\s+Officer|Chief\\s+Financial\\s+Officer|Chief\\s+Operating\\s+Officer|' +
   'President|Vice\\s+President|Secretary|Treasurer|Director|Manager|Managing\\s+Member|Member|' +
-  'CEO|CFO|COO|VP|Governor|Partner|Principal|Owner|Organizer|Officer';
+  'CEO|CFO|COO|VP|Governor|Partner|Principal|Owner|Founder|Organizer|Officer';
 
+function caseInsensitiveTokenChars(raw: string): string {
+  return raw.replace(/[A-Za-z]/g, (ch) => `[${ch.toUpperCase()}${ch.toLowerCase()}]`);
+}
+
+/** Title alts, case-insensitive without flipping the whole regex to /i/ (that would make [A-Z] eat lowercase). */
+export const TITLE_CI = TITLE.split('|').map(caseInsensitiveTokenChars).join('|');
 /** Word-bounded so "cookies" cannot match COO, "cooperation" cannot match COO, etc. */
-const TITLE_BOUNDED = `\\b(?:${TITLE})\\b`;
+export const TITLE_BOUNDED = `\\b(?:${TITLE_CI})\\b`;
 const TITLE_RE = new RegExp(`^(?:${TITLE})$`, 'i');
 const SKIP_NAME =
-  /^(name|title|address|city|state|zip|none|n\/a|same|see below|continued|officer|director|manager|member)$/i;
+  /^(name|title|address|city|state|zip|none|n\/a|same|see below|continued|officer|director|manager|member|detail name|detail|entity name|business name|company name|legal name|officer name|full name)$/i;
+
+const US_STATE_CODES = new Set(
+  'AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'
+    .split(' ')
+    .filter(Boolean),
+);
+
+const TITLE_STRIP_TOKENS = new Set(
+  'president vice secretary treasurer director manager member ceo cfo coo vp governor partner principal owner founder organizer officer chief executive coach'
+    .split(' '),
+);
+
+const FILLER_TOKENS = new Set(['and', 'the', 'of', 'for', 'llc', 'inc', 'ltd', 'corp', 'dba', 'co']);
+
+const LABEL_TOKENS = new Set([
+  'detail',
+  'name',
+  'title',
+  'entity',
+  'business',
+  'company',
+  'legal',
+  'full',
+  'address',
+  'city',
+  'state',
+  'zip',
+]);
+
+const REVIEW_TOKENS = new Set(
+  'was were is easy great good best love loved amazing highly recommend service always never just really awesome excellent friendly helpful professional process hiring them made'
+    .split(' '),
+);
+
+/** One capitalized name token: Jane, JANE, O'Brien, Jean-Luc. Not "was". */
+export const CAP_TOKEN = `[A-Z][A-Za-z'.\\-]{1,30}`;
+/** Optional middle initial. */
+const MID_TOKEN = `(?:${CAP_TOKEN}|[A-Z]\\.)`;
+/**
+ * Strict 2–3 capitalized tokens (First Last, First M. Last, LAST, FIRST).
+ * Case-sensitive: lowercase review words cannot join the capture.
+ */
+export const CAP_NAME_CAPTURE =
+  `(${CAP_TOKEN}\\s*,\\s*${MID_TOKEN}(?:\\s+${CAP_TOKEN})?|${CAP_TOKEN}\\s+${MID_TOKEN}(?:\\s+${CAP_TOKEN})?)`;
 
 export function roleFromTitle(title: string): OwnerRole {
   for (const row of TITLE_ROLE) {
@@ -53,27 +105,73 @@ function cleanName(raw: string): string {
     .trim();
 }
 
-function usablePersonName(name: string): boolean {
-  const cleaned = cleanName(name);
-  if (cleaned.length < 4 || cleaned.length > 80) return false;
-  if (SKIP_NAME.test(cleaned)) return false;
-  if (isRegistryAgentName(cleaned)) return false;
-  if (hasCompanyWord(cleaned)) return false;
-  if (/^\d/.test(cleaned)) return false;
-  const tokens = cleaned.replace(/,/g, ' ').split(/\s+/).filter(Boolean);
-  if (tokens.length < 2 || tokens.length > 5) return false;
-  return /[A-Za-z]/.test(cleaned);
+function keepNameToken(token: string): 'keep' | 'strip' | 'reject' {
+  const letters = token.replace(/[^A-Za-z]/g, '');
+  if (!letters) return 'strip';
+  const upper = letters.toUpperCase();
+  const lower = letters.toLowerCase();
+  if (REVIEW_TOKENS.has(lower)) return 'reject';
+  if (US_STATE_CODES.has(upper) && upper.length === 2) return 'strip';
+  if (TITLE_STRIP_TOKENS.has(lower)) return 'strip';
+  if (FILLER_TOKENS.has(lower)) return 'strip';
+  if (LABEL_TOKENS.has(lower)) return 'strip';
+  if (!/^[A-Z]/.test(token)) return 'reject';
+  return 'keep';
 }
 
-function pushEntry(out: RosterEntry[], seen: Set<string>, name: string, title: string): void {
-  const cleaned = cleanName(name);
-  if (!usablePersonName(cleaned)) return;
+/**
+ * 2–3 capitalized person tokens. Strips state codes, title words, and labels.
+ * Review-text names return null.
+ */
+export function scrubCapitalizedPersonName(raw: string): string | null {
+  const cleaned = cleanName(raw);
+  if (!cleaned || cleaned.length > 80) return null;
+  if (SKIP_NAME.test(cleaned)) return null;
+  const comma = cleaned.includes(',');
+  const tokens = cleaned.replace(/,/g, ' ').split(/\s+/).filter(Boolean);
+  const kept: string[] = [];
+  for (const token of tokens) {
+    const verdict = keepNameToken(token);
+    if (verdict === 'reject') return null;
+    if (verdict === 'strip') continue;
+    kept.push(token.replace(/[,;]+$/g, ''));
+  }
+  if (kept.length < 2 || kept.length > 3) return null;
+  const first = kept[0].replace(/[^A-Za-z]/g, '');
+  const last = kept[kept.length - 1].replace(/[^A-Za-z]/g, '');
+  if (first.length < 2 || last.length < 2) return null;
+  if (kept.length === 3) {
+    const mid = kept[1].replace(/[^A-Za-z]/g, '');
+    if (!mid) return null;
+  }
+  if (comma && kept.length >= 2) return `${kept[0]}, ${kept.slice(1).join(' ')}`;
+  return kept.join(' ');
+}
+
+function usablePersonName(name: string): boolean {
+  const scrubbed = scrubCapitalizedPersonName(name);
+  if (!scrubbed) return false;
+  if (isRegistryAgentName(scrubbed)) return false;
+  if (hasCompanyWord(scrubbed)) return false;
+  if (/^\d/.test(scrubbed)) return false;
+  return true;
+}
+
+function pushEntry(
+  out: RosterEntry[],
+  seen: Set<string>,
+  name: string,
+  title: string,
+  labeled = true,
+): void {
+  const cleaned = scrubCapitalizedPersonName(name);
+  if (!cleaned || !usablePersonName(cleaned)) return;
   const role = roleFromTitle(title);
   if (role === 'registered_agent') return;
   const key = cleaned.toLowerCase();
   if (seen.has(key)) return;
   seen.add(key);
-  out.push({ name: cleaned, title: cleanName(title) || 'Officer', role });
+  out.push({ name: cleaned, title: cleanName(title) || 'Officer', role, labeled });
 }
 
 /** SI-550 / LLC-12 / annual-report / HTML-table officer names. */
@@ -84,35 +182,34 @@ export function parseOfficerRoster(textOrHtml: string): RosterEntry[] {
   const out: RosterEntry[] = [];
   const seen = new Set<string>();
 
-  const labeled = new RegExp(
-    `${TITLE_BOUNDED}\\s*[:\\-#]*\\s*([A-Z][A-Za-z .'-]{1,40}(?:,\\s*[A-Z][A-Za-z .'-]{1,40})?)`,
-    'gi',
-  );
+  const labeled = new RegExp(`${TITLE_BOUNDED}\\s*[:\\-#]*\\s*${CAP_NAME_CAPTURE}`, 'g');
   for (const hit of text.matchAll(labeled)) {
     const title = (hit[0] || '').split(/[:\-#]/)[0]?.trim() || 'Officer';
-    pushEntry(out, seen, hit[1] || '', title);
+    pushEntry(out, seen, hit[1] || '', title, true);
   }
 
-  const reversed = new RegExp(
-    `([A-Z][A-Za-z .'-]{1,40}(?:,\\s*[A-Z][A-Za-z .'-]{1,40})?)\\s*,\\s*(${TITLE_BOUNDED})`,
-    'gi',
-  );
+  const reversed = new RegExp(`${CAP_NAME_CAPTURE}\\s*,\\s*(${TITLE_BOUNDED})`, 'g');
   for (const hit of text.matchAll(reversed)) {
-    pushEntry(out, seen, hit[1] || '', hit[2] || 'Officer');
+    pushEntry(out, seen, hit[1] || '', hit[2] || 'Officer', true);
+  }
+
+  const nameField = new RegExp(`\\bName\\s*[:\\-]?\\s*${CAP_NAME_CAPTURE}`, 'g');
+  for (const hit of text.matchAll(nameField)) {
+    pushEntry(out, seen, hit[1] || '', 'Officer', true);
   }
 
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const titled = line.match(new RegExp(`^(${TITLE_BOUNDED})\\s*[:\\-]?\\s*(.+)$`, 'i'));
+    const titled = line.match(new RegExp(`^(${TITLE_BOUNDED})\\s*[:\\-]?\\s*${CAP_NAME_CAPTURE}$`));
     if (titled?.[1] && titled[2] && !isOfficerTitle(titled[2])) {
-      pushEntry(out, seen, titled[2], titled[1]);
+      pushEntry(out, seen, titled[2], titled[1], true);
       continue;
     }
     if (isOfficerTitle(line)) {
       const next = lines[i + 1] || '';
-      const nextName = next.replace(/^(name|full name)\s*[:\-]\s*/i, '');
-      if (nextName && !isOfficerTitle(nextName)) pushEntry(out, seen, nextName, line);
+      const nextName = next.replace(/^(name|full name|detail name)\s*[:\-]\s*/i, '');
+      if (nextName && !isOfficerTitle(nextName)) pushEntry(out, seen, nextName, line, true);
     }
   }
 

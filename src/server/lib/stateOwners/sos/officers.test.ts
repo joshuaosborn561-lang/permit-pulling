@@ -30,6 +30,13 @@ Registered Agent: CT CORPORATION SYSTEM
     assert.equal(parseOfficerRoster('Enable JavaScript and cookies to continue').length, 0);
   });
 
+  it('does not capture lowercase review text or state-code fragments as names', () => {
+    assert.equal(parseOfficerRoster('The owner was easy and professional.').length, 0);
+    assert.equal(parseOfficerRoster('President AND COACH X of the shop').length, 0);
+    assert.equal(parseOfficerRoster('CEO CA X listed on the filing').length, 0);
+    assert.equal(parseOfficerRoster('Officer: Detail Name').length, 0);
+  });
+
   it('maps roster rows to people with first/last', () => {
     const people = rosterToPeople(
       [{ name: 'JANE SAMPLE', title: 'CEO', role: 'officer' }],

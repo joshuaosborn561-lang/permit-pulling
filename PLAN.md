@@ -322,12 +322,15 @@ Existing adapters in this repo are marked **HAVE**.
 
 **Serper** (`SERPER_API_KEY`, `https://google.serper.dev/search`) runs first for **every** state, including jurisdictions without an SOS adapter yet.
 
-Queries (2 credits / row, **$0.001**/query):
+Queries (~5 credits / row, **$0.001**/query) — **separate** site queries (combined `site:a OR site:b` never ranked registry pages):
 
 1. `<company> <city> <state> officer OR owner OR CEO OR president OR manager`
-2. Site-targeted: `site:opencorporates.com OR site:bizapedia.com OR site:<state SOS host> "<company>" …`
+2. `site:opencorporates.com "…"`
+3. `site:bizapedia.com "…"`
+4. `site:sunbiz.org "…"`
+5. `site:<state SOS host> "…"`
 
-Extract person + title from organic snippets. Accept only if the snippet fuzzy-matches the **same company name** and **city or state**. Record `source_url` and a 0–1 `confidence_score`. `waterfall_ready` only at **high** confidence (trusted host + strong company/geo). Challenge HTML in a snippet is never a match.
+Extract person + title from organic snippets with **case-sensitive 2–3 capitalized name tokens** (review text / `Detail Name` / state codes are never names). Accept only if the snippet fuzzy-matches the **same company name** (trigram ≥ 0.62) and **city or state**. Record `source_url` and a 0–1 `confidence_score`. `waterfall_ready` at **high** confidence: trusted host (OpenCorporates / Bizapedia / Sunbiz / SOS) **or** owner/founder/president + exact company + city. Challenge HTML in a snippet is never a match.
 
 **Apify** runs only when Serper does not return a high-confidence owner **and** official HTML is blocked, behind `APIFY_MAX_USD`.
 
@@ -369,7 +372,7 @@ calicodev developer API is **out**. Search and SI both go through public bizfile
 
 | Scenario | Apify $ | Wall clock | Owner names? |
 |----------|---------|------------|--------------|
-| Serper-first (2 queries/row, all states) | **$0** Apify; **~$31** Serper for 15,359 | Fast; no WAF | Yes, if high-confidence snippet |
+| Serper-first (5 queries/row, all states) | **$0** Apify; **~$77** Serper for 15,359 | Fast; no WAF | Yes, if high-confidence snippet |
 | A. Direct HTTP search + SI (no challenge) | **$0** | ~2–6 h @ 4 lanes | Yes, if SI present |
 | B. Typical: Incapsula blocks datacenter; Playwright + residential for search (and SI when images/JSON also block) | **~$290 mid** for ~13,050 (~1.5 × $0.015); range **~$200–$400** | ~20–40 h at conc 3 | Yes, if SI parses |
 | C. Worst: two full Playwright runs/row + image SI | **~$400–$750** | longer | Yes, if SI parses |
@@ -391,7 +394,7 @@ calicodev developer API is **out**. Search and SI both go through public bizfile
 
 **Planning envelope for the first 15,359 (not a bid):**
 
-- Serper-first (~2 credits/row × 15,359): **~$31** regardless of WAF. Apify only on Serper misses.
+- Serper-first (~5 credits/row × 15,359): **~$77** regardless of WAF. Apify only on Serper misses.
 - Best (CA weekly bulk **or** unchallenged bizfileOnline + IL files + no Apify): **~$0** Apify + Serper ~$31, under a workday of compute.
 - Base (CA Incapsula → Playwright residential, ~1.5 lookups/row, plus a few hundred other blocked HTML rows): **~$200–$400** Apify, dominated by CA, **if Serper misses**.
 - Bad (two Playwright runs per CA row + image SI + other blocked states): **~$400–$800** Apify fallback.
@@ -407,7 +410,7 @@ calicodev developer API is **out**. Search and SI both go through public bizfile
 
 Required for CA name path at first-use volume:
 
-1. **Serper** `SERPER_API_KEY` on [google.serper.dev](https://google.serper.dev). First owner tier for all 51 jurisdictions. ~2 credits/row (~$0.002).
+1. **Serper** `SERPER_API_KEY` on [google.serper.dev](https://google.serper.dev). First owner tier for all 51 jurisdictions. ~5 credits/row (~$0.005).
 2. Confirm the existing **Apify** account (`APIFY_TOKEN` / `APIFY_PROXY_PASSWORD`) has **CU + residential GB** headroom as **fallback** when Serper misses and bizfileOnline Incapsula/Imperva blocks datacenter IPs. Playwright + `groups-RESIDENTIAL`. Set `APIFY_MAX_USD`. Starter is enough for a 50-row probe.
 
 Optional, still official, still free or cheap:

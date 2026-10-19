@@ -5,8 +5,8 @@ export const APIFY_USD_PER_COMPUTE_UNIT = 0.2;
 export const CA_APIFY_LOOKUPS_PER_ROW = 1.5;
 /** google.serper.dev search. One credit per query; Josh prefers this over Apify. */
 export const SERPER_USD_PER_QUERY = 0.001;
-/** Generic officer query + one site-targeted query (OpenCorporates / Bizapedia / SOS). */
-export const SERPER_QUERIES_PER_ROW = 2;
+/** Generic officer query + separate OpenCorporates, Bizapedia, Sunbiz, and state SOS queries. */
+export const SERPER_QUERIES_PER_ROW = 5;
 
 export function apifyMaxUsdFromEnv(): number | null {
   const raw = process.env.APIFY_MAX_USD?.trim();

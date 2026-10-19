@@ -12,24 +12,32 @@ import type { OwnerConfidence, OwnerRole } from '../types.js';
 import { catalogByCode } from './catalog.js';
 import type { LookupContext } from './context.js';
 import { ctxSerper } from './context.js';
-import { isOfficerTitle, parseOfficerRoster, roleFromTitle, type RosterEntry } from './officers.js';
+import {
+  CAP_NAME_CAPTURE,
+  TITLE_BOUNDED,
+  isOfficerTitle,
+  parseOfficerRoster,
+  roleFromTitle,
+  scrubCapitalizedPersonName,
+  type RosterEntry,
+} from './officers.js';
 import { organicFromSerperPayload, serperSearch } from './serper.js';
 import { SERPER_USD_PER_QUERY } from './spend.js';
 import type { NameLookupInput, NameLookupResult, SerperOrganicHit, WaterfallOwnerHit } from './types.js';
 import { isWaterfallReady } from './waterfall.js';
 
-const TITLE =
-  'Chief\\s+Executive\\s+Officer|Chief\\s+Financial\\s+Officer|Chief\\s+Operating\\s+Officer|' +
-  'President|Vice\\s+President|Secretary|Treasurer|Director|Manager|Managing\\s+Member|Member|' +
-  'CEO|CFO|COO|VP|Governor|Partner|Principal|Owner|Organizer|Officer';
-const TITLE_BOUNDED = `\\b(?:${TITLE})\\b`;
-
 const SKIP_HOST =
   /(^|\.)(linkedin|facebook|instagram|youtube|twitter|x\.com|reddit|pinterest|tiktok|wikipedia|indeed|glassdoor|yelp|yellowpages|bbb\.org|maps\.google)(\.|$)/i;
 
-const TRUSTED_HOST = /(^|\.)(opencorporates\.com|bizapedia\.com)$/i;
+const TRUSTED_HOST = /(^|\.)(opencorporates\.com|bizapedia\.com|sunbiz\.org)$/i;
 
 export const SERPER_HIGH_SCORE = 0.8;
+/** Raised from 0.48 so weak trigram windows cannot tie a different company. */
+export const SERPER_COMPANY_TRIGRAM = 0.62;
+
+const TRUSTED_SITE_HOSTS = ['opencorporates.com', 'bizapedia.com', 'sunbiz.org'] as const;
+
+const LEADERSHIP_TITLE = /\b(owner|founder|president|ceo|chief\s+executive(\s+officer)?)\b/i;
 
 export function sosHostForState(state: string): string | null {
   const entry = catalogByCode().get(normalizeState(state));
@@ -55,18 +63,29 @@ export function serperOfficerQuery(input: NameLookupInput): string {
     .join(' ');
 }
 
-export function serperSiteQuery(input: NameLookupInput): string {
+function siteQuery(host: string, input: NameLookupInput): string {
   const company = String(input.company_name || '').trim();
   const city = String(input.city || '').trim();
   const state = normalizeState(input.state);
   const full = stateFullName(state);
-  const host = sosHostForState(state);
-  const sites = ['site:opencorporates.com', 'site:bizapedia.com'];
-  if (host) sites.push(`site:${host}`);
-  return `${sites.join(' OR ')} "${company}" ${city} ${full || state} officer OR owner OR CEO OR president OR manager`.replace(
+  return `site:${host} "${company}" ${city} ${full || state} officer OR owner OR CEO OR president OR manager`.replace(
     /\s+/g,
     ' ',
   );
+}
+
+/** One Google query per trusted registry — combined `site:a OR site:b` never ranked those pages. */
+export function serperSiteQueries(input: NameLookupInput): string[] {
+  const hosts: string[] = [...TRUSTED_SITE_HOSTS];
+  const sos = sosHostForState(input.state);
+  if (sos && !hosts.some((h) => sos === h || sos.endsWith(`.${h}`) || h.endsWith(`.${sos}`))) {
+    hosts.push(sos);
+  }
+  return hosts.map((host) => siteQuery(host, input));
+}
+
+export function serperQueriesFor(input: NameLookupInput): string[] {
+  return [serperOfficerQuery(input), ...serperSiteQueries(input)];
 }
 
 function hostOf(url: string): string {
@@ -110,7 +129,6 @@ export function blobHasState(blob: string, state: string): boolean {
   const code = normalizeState(state);
   const full = stateFullName(code);
   if (full && new RegExp(`\\b${escapeRe(full)}\\b`, 'i').test(blob)) return true;
-  // Address-style code ("Oakland, CA") — not the English word "in" / "or" / "me".
   return new RegExp(`[,(\\[]\\s*${escapeRe(code)}\\b|\\b${escapeRe(code)}\\s*\\)|\\b${escapeRe(code)}\\s+\\d{5}\\b`, 'i').test(
     blob,
   );
@@ -127,12 +145,10 @@ export function companyTiedToBlob(
     const method = hay === key ? 'exact' : 'substring';
     return { method, score: method === 'exact' ? 1 : 0.85 };
   }
-  // Score the company against each window of similar token length in the blob.
   const keyTokens = key.split(' ');
   const hayTokens = hay.split(' ');
   if (!hayTokens.length) return null;
   let best = 0;
-  if (hay.includes(key) || key.includes(hay)) best = Math.max(best, 0.85);
   const window = Math.max(keyTokens.length, 2);
   for (let i = 0; i < hayTokens.length; i++) {
     const slice = hayTokens.slice(i, i + window + 1).join(' ');
@@ -141,60 +157,73 @@ export function companyTiedToBlob(
   }
   const whole = trigramSimilarity(company, blob);
   if (whole > best) best = whole;
-  if (best >= 0.48) return { method: 'trigram', score: best };
+  if (best >= SERPER_COMPANY_TRIGRAM) return { method: 'trigram', score: best };
   return null;
 }
 
-function usablePersonName(name: string, company: string): boolean {
-  const cleaned = String(name || '').replace(/\s+/g, ' ').trim();
-  if (cleaned.length < 4 || cleaned.length > 80) return false;
+function stripTrailingGeo(name: string, input: NameLookupInput): string {
+  const tails = [stateFullName(input.state), String(input.city || '').trim(), normalizeState(input.state)]
+    .filter((t) => String(t).length >= 2)
+    .sort((a, b) => String(b).length - String(a).length);
+  let s = name;
+  for (const tail of tails) {
+    s = s.replace(new RegExp(`[,\\s]+${escapeRe(String(tail))}\\s*$`, 'i'), '').trim();
+  }
+  return s;
+}
+
+function usablePersonName(name: string, company: string, input?: NameLookupInput): boolean {
+  const geoStripped = input ? stripTrailingGeo(name, input) : name;
+  const cleaned = scrubCapitalizedPersonName(geoStripped);
+  if (!cleaned) return false;
   if (isRegistryAgentName(cleaned)) return false;
   if (hasCompanyWord(cleaned)) return false;
   if (namesMatchNormalized(cleaned, company)) return false;
-  const tokens = cleaned.replace(/,/g, ' ').split(/\s+/).filter(Boolean);
-  if (tokens.length < 2 || tokens.length > 5) return false;
-  return /[A-Za-z]/.test(cleaned);
+  return true;
 }
 
-function extraSnippetEntries(text: string, company: string): RosterEntry[] {
+function extraSnippetEntries(text: string, company: string, input?: NameLookupInput): RosterEntry[] {
   const out: RosterEntry[] = [];
   const seen = new Set<string>();
-  const push = (name: string, title: string) => {
-    const cleaned = String(name || '').replace(/\s+/g, ' ').replace(/[,;]+$/g, '').trim();
-    if (!usablePersonName(cleaned, company)) return;
+  const push = (name: string, title: string, labeled: boolean) => {
+    const geoStripped = input ? stripTrailingGeo(name, input) : name;
+    const cleaned = scrubCapitalizedPersonName(geoStripped);
+    if (!cleaned || !usablePersonName(cleaned, company, input)) return;
     const key = cleaned.toLowerCase();
     if (seen.has(key)) return;
     seen.add(key);
-    out.push({ name: cleaned, title: String(title || 'Officer').replace(/\s+/g, ' ').trim(), role: roleFromTitle(title) });
+    out.push({
+      name: cleaned,
+      title: String(title || 'Officer').replace(/\s+/g, ' ').trim(),
+      role: roleFromTitle(title),
+      labeled,
+    });
   };
 
+  // No /i/ flag — name tokens must start with a capital letter.
   const isThe = new RegExp(
-    `\\b([A-Z][A-Za-z.'\\-]+(?:\\s+[A-Z][A-Za-z.'\\-]+){1,3})\\s+is\\s+(?:the\\s+)?(${TITLE_BOUNDED})\\b`,
-    'gi',
+    `\\b${CAP_NAME_CAPTURE}\\s+[Ii][Ss]\\s+(?:(?:[Tt][Hh][Ee])\\s+)?(${TITLE_BOUNDED})\\b`,
+    'g',
   );
-  for (const m of text.matchAll(isThe)) push(m[1] || '', m[2] || 'Officer');
+  for (const m of text.matchAll(isThe)) push(m[1] || '', m[2] || 'Officer', false);
 
-  const dash = new RegExp(
-    `\\b([A-Z][A-Za-z.'\\-]+(?:\\s+[A-Z][A-Za-z.'\\-]+){1,3})\\s*[-–—]\\s*(${TITLE_BOUNDED})\\b`,
-    'gi',
-  );
-  for (const m of text.matchAll(dash)) push(m[1] || '', m[2] || 'Officer');
+  const dash = new RegExp(`\\b${CAP_NAME_CAPTURE}\\s*[-–—]\\s*(${TITLE_BOUNDED})\\b`, 'g');
+  for (const m of text.matchAll(dash)) push(m[1] || '', m[2] || 'Officer', false);
 
-  const titleFirst = new RegExp(
-    `\\b(${TITLE_BOUNDED})\\s+([A-Z][A-Za-z.'\\-]+(?:\\s+[A-Z][A-Za-z.'\\-]+){1,3})\\b`,
-    'gi',
-  );
+  const titleFirst = new RegExp(`\\b(${TITLE_BOUNDED})\\s+${CAP_NAME_CAPTURE}\\b`, 'g');
   for (const m of text.matchAll(titleFirst)) {
     if (isOfficerTitle(m[2] || '')) continue;
-    push(m[2] || '', m[1] || 'Officer');
+    push(m[2] || '', m[1] || 'Officer', false);
   }
 
   return out;
 }
 
-export function officersFromSerperBlob(blob: string, company: string): RosterEntry[] {
-  const roster = parseOfficerRoster(blob).filter((row) => usablePersonName(row.name, company) && row.role !== 'registered_agent');
-  const extra = extraSnippetEntries(blob, company);
+export function officersFromSerperBlob(blob: string, company: string, input?: NameLookupInput): RosterEntry[] {
+  const roster = parseOfficerRoster(blob).filter(
+    (row) => usablePersonName(row.name, company, input) && row.role !== 'registered_agent',
+  );
+  const extra = extraSnippetEntries(blob, company, input);
   const seen = new Set(roster.map((r) => r.name.toLowerCase()));
   for (const row of extra) {
     if (seen.has(row.name.toLowerCase())) continue;
@@ -210,6 +239,14 @@ function confidenceFromScore(score: number): OwnerConfidence {
   return 'low';
 }
 
+function exactCompanyInBlob(method: 'exact' | 'substring' | 'trigram'): boolean {
+  return method === 'exact' || method === 'substring';
+}
+
+function isLeadershipTitle(title: string): boolean {
+  return LEADERSHIP_TITLE.test(title || '');
+}
+
 export interface SerperCandidate {
   entry: RosterEntry;
   source_url: string;
@@ -219,28 +256,17 @@ export interface SerperCandidate {
   trusted: boolean;
 }
 
-export function scoreSerperOrganic(
+function scoreEntry(
   input: NameLookupInput,
-  hit: SerperOrganicHit,
+  entry: RosterEntry,
+  url: string,
+  companyHit: { method: 'exact' | 'substring' | 'trigram'; score: number },
+  cityOk: boolean,
+  stateOk: boolean,
 ): SerperCandidate | null {
-  const url = String(hit.link || '').trim();
-  const title = String(hit.title || '');
-  const snippet = String(hit.snippet || '');
-  const blob = `${title}\n${snippet}`;
-  if (!url || isSkippedSerperHost(url)) return null;
-  if (isChallengePage(blob) || isChallengePage(title) || isChallengePage(snippet)) return null;
-
-  const companyHit = companyTiedToBlob(input.company_name, blob);
-  if (!companyHit) return null;
-  const cityOk = blobHasCity(blob, input.city);
-  const stateOk = blobHasState(blob, input.state);
-  if (!cityOk && !stateOk) return null;
-
-  const officers = officersFromSerperBlob(blob, input.company_name);
-  const entry = officers[0];
-  if (!entry) return null;
-
   const trusted = isTrustedSerperHost(url, input.state);
+  const leadership = isLeadershipTitle(entry.title);
+  const exactCompany = exactCompanyInBlob(companyHit.method);
   let score = 0;
   if (companyHit.method === 'exact') score += 0.4;
   else if (companyHit.method === 'substring') score += 0.3;
@@ -248,14 +274,17 @@ export function scoreSerperOrganic(
   if (cityOk) score += 0.15;
   if (stateOk) score += 0.15;
   if (trusted) score += 0.15;
-  if (entry.title) score += 0.1;
+  if (entry.labeled) score += 0.08;
+  if (leadership) score += 0.07;
+  if (entry.title) score += 0.08;
   const split = splitPersonName(entry.name);
   if (split.first_name && split.last_name) score += 0.1;
   score = Math.min(1, Number(score.toFixed(3)));
 
-  // Untrusted directories cannot be high — snippets are too noisy.
-  if (!trusted && score >= SERPER_HIGH_SCORE) score = 0.79;
-  // High requires city+state when the host is not official/OpenCorporates/Bizapedia.
+  const strongUntrusted = !trusted && leadership && exactCompany && cityOk;
+  if (!trusted && score >= SERPER_HIGH_SCORE && !strongUntrusted) {
+    score = 0.79;
+  }
   if (trusted && score >= SERPER_HIGH_SCORE && !(cityOk && stateOk) && companyHit.method === 'trigram') {
     score = 0.79;
   }
@@ -270,6 +299,55 @@ export function scoreSerperOrganic(
     company_method: companyHit.method,
     trusted,
   };
+}
+
+function rankCandidate(c: SerperCandidate): number {
+  return c.score + (c.entry.labeled ? 0.05 : 0) + (c.trusted ? 0.02 : 0);
+}
+
+function betterCandidate(a: SerperCandidate | null, b: SerperCandidate): boolean {
+  if (!a) return true;
+  const rb = rankCandidate(b);
+  const ra = rankCandidate(a);
+  if (rb !== ra) return rb > ra;
+  if (b.entry.labeled && !a.entry.labeled) return true;
+  if (b.trusted && !a.trusted) return true;
+  return false;
+}
+
+export function scoreSerperOrganic(
+  input: NameLookupInput,
+  hit: SerperOrganicHit,
+): SerperCandidate | null {
+  const cands = candidatesFromOrganic(input, hit);
+  let best: SerperCandidate | null = null;
+  for (const cand of cands) {
+    if (betterCandidate(best, cand)) best = cand;
+  }
+  return best;
+}
+
+export function candidatesFromOrganic(input: NameLookupInput, hit: SerperOrganicHit): SerperCandidate[] {
+  const url = String(hit.link || '').trim();
+  const title = String(hit.title || '');
+  const snippet = String(hit.snippet || '');
+  const blob = `${title}\n${snippet}`;
+  if (!url || isSkippedSerperHost(url)) return [];
+  if (isChallengePage(blob) || isChallengePage(title) || isChallengePage(snippet)) return [];
+
+  const companyHit = companyTiedToBlob(input.company_name, blob);
+  if (!companyHit) return [];
+  const cityOk = blobHasCity(blob, input.city);
+  const stateOk = blobHasState(blob, input.state);
+  if (!cityOk && !stateOk) return [];
+
+  const officers = officersFromSerperBlob(blob, input.company_name, input);
+  const out: SerperCandidate[] = [];
+  for (const entry of officers) {
+    const scored = scoreEntry(input, entry, url, companyHit, cityOk, stateOk);
+    if (scored) out.push(scored);
+  }
+  return out;
 }
 
 function hitFromCandidate(input: NameLookupInput, cand: SerperCandidate): WaterfallOwnerHit {
@@ -312,18 +390,16 @@ export async function resolveSerperOwner(
   if (!company || !state) return serperEmpty(input, 0);
   if (ctx?.serperEnabled === false) return serperEmpty(input, 0);
 
+  const queries = serperQueriesFor(input);
   const before = ctxSerper(ctx).credits;
-  const [generic, site] = await Promise.all([
-    serperSearch(serperOfficerQuery(input), ctx),
-    serperSearch(serperSiteQuery(input), ctx),
-  ]);
+  const payloads = await Promise.all(queries.map((q) => serperSearch(q, ctx)));
   const credits = ctxSerper(ctx).credits - before;
 
-  const organic: SerperOrganicHit[] = [
-    ...organicFromSerperPayload(generic),
-    ...organicFromSerperPayload(site),
-  ];
-  const kg = generic.knowledgeGraph?.description || site.knowledgeGraph?.description;
+  const organic: SerperOrganicHit[] = [];
+  for (const payload of payloads) {
+    organic.push(...organicFromSerperPayload(payload));
+  }
+  const kg = payloads[0]?.knowledgeGraph?.description;
   if (kg && organic[0]) {
     organic[0] = {
       ...organic[0],
@@ -333,10 +409,8 @@ export async function resolveSerperOwner(
 
   let best: SerperCandidate | null = null;
   for (const row of organic) {
-    const cand = scoreSerperOrganic(input, row);
-    if (!cand) continue;
-    if (!best || cand.score > best.score || (cand.score === best.score && cand.trusted && !best.trusted)) {
-      best = cand;
+    for (const cand of candidatesFromOrganic(input, row)) {
+      if (betterCandidate(best, cand)) best = cand;
     }
   }
 

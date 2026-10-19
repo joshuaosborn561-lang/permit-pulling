@@ -105,7 +105,7 @@ export function firstUseEnvelope(): Record<string, unknown> {
     serper_credits: estimateSerperCredits(FIRST_USE_ASSUMED_TOTAL),
     serper_usd: estimateSerperUsd(FIRST_USE_ASSUMED_TOTAL),
     serper_note:
-      'Serper-first (google.serper.dev, SERPER_API_KEY): 2 queries/row. Apify Playwright is only the fallback when Serper does not return a high-confidence owner, behind APIFY_MAX_USD.',
+      'Serper-first (google.serper.dev, SERPER_API_KEY): 5 queries/row (generic + OpenCorporates + Bizapedia + Sunbiz + state SOS). Apify Playwright is only the fallback when Serper does not return a high-confidence owner, behind APIFY_MAX_USD.',
     ca_note:
       'calicodev/calico developer API is government-agencies-only. Public bizfileOnline + SI; Apify Playwright + residential when Incapsula/Imperva blocks datacenter IPs.',
   };
