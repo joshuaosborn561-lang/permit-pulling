@@ -1,0 +1,17 @@
+[
+  {
+    "searchQuery": "Sample Builders LLC",
+    "entityName": "SAMPLE BUILDERS LLC",
+    "entityNumber": "202399900002",
+    "status": "Active",
+    "city": "Oakland",
+    "agentName": "JANE AGENT",
+    "filings": [
+      {
+        "filingType": "Statement of Information",
+        "filingDate": "2024-03-01",
+        "documentUrl": "https://bizfileonline.sos.ca.gov/api/report/GetImageByNum/000111222333444555666777888999000111222333444555"
+      }
+    ]
+  }
+]

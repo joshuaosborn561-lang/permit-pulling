@@ -1,12 +1,23 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { assertAllowedApifyActor, apifyFetchHtml, PaidDatasetForbiddenError } from './apifyPlaywright.js';
+import {
+  assertAllowedApifyActor,
+  assertAllowedHybridActor,
+  apifyFetchHtml,
+  PaidDatasetForbiddenError,
+} from './apifyPlaywright.js';
 import { ApifySpendTracker } from './spend.js';
 
 describe('Apify policy', () => {
   it('allows playwright-scraper and forbids paid officer datasets', () => {
     assert.doesNotThrow(() => assertAllowedApifyActor('apify/playwright-scraper'));
     assert.throws(() => assertAllowedApifyActor('open-sos-data/officers'), PaidDatasetForbiddenError);
+  });
+
+  it('allows the CA hybrid actors (dz_omar search+history, web-fetch SI PDF)', () => {
+    assert.doesNotThrow(() => assertAllowedHybridActor('dz_omar/california-bizfile-scraper'));
+    assert.doesNotThrow(() => assertAllowedHybridActor('apify/web-fetch'));
+    assert.throws(() => assertAllowedHybridActor('open-sos-data/officers'), PaidDatasetForbiddenError);
   });
 
   it('does not count spend on refused runs', async () => {

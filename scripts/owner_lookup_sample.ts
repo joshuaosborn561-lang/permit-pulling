@@ -54,9 +54,9 @@ Options:
 Env: SERPER_API_KEY, APIFY_TOKEN, APIFY_MAX_USD, IL_DTA_DIR, CA_BATCH_CHECKPOINT
 No Supabase writes. Permit/license path is unchanged (match_state_owners).
 
-5-company CA smoke, then 50 (Apify residential, no new proxy vendor):
-  export APIFY_TOKEN=... APIFY_MAX_USD=5
-  npx tsx scripts/owner_lookup_sample.ts --in ca-5.csv --out ca-5-results.csv --ca-batch --states CA --no-serper --ca-debug --checkpoint /tmp/ca-batch-5.json
+3-company CA smoke (sticky Chrome session; hybrid fallback if UI stays blocked):
+  export APIFY_TOKEN=... APIFY_MAX_USD=2
+  npx tsx scripts/owner_lookup_sample.ts --in ca-3.csv --out ca-3-results.csv --ca-batch --states CA --no-serper --ca-debug --checkpoint /tmp/ca-batch-3.json
 `);
 }
 

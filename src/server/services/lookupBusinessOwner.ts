@@ -121,7 +121,7 @@ export function firstUseEnvelope(): Record<string, unknown> {
       'calicodev/calico developer API is government-agencies-only. Public bizfileOnline + SI; Apify Playwright + residential when Incapsula/Imperva blocks datacenter IPs. ca_batch / --ca-batch: one sticky Playwright session (groups-RESIDENTIAL), Incapsula once, then hundreds of companies (search + SI PDF).',
     ca_batch_usd_50: estimateCaBatchUsd(50),
     ca_batch_probe:
-      'npx tsx scripts/owner_lookup_sample.ts --in ca-5.csv --out ca-5-results.csv --ca-batch --states CA --no-serper --ca-debug --checkpoint /tmp/ca-batch-5.json',
+      'npx tsx scripts/owner_lookup_sample.ts --in ca-3.csv --out ca-3-results.csv --ca-batch --states CA --no-serper --ca-debug --checkpoint /tmp/ca-batch-3.json',
   };
 }
 

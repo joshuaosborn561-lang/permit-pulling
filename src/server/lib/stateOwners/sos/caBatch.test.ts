@@ -23,7 +23,8 @@ import {
 } from './caBatchLogic.js';
 import { parseSiOfficerTable } from './caSi.js';
 import { parseOfficerRoster } from './officers.js';
-import { ApifySpendTracker, estimateCaBatchUsd, proxyGbFromApifyRun, usdFromApifyRun } from './spend.js';
+import { caBatchShouldHybrid } from './caHybrid.js';
+import { ApifySpendTracker, estimateCaBatchUsd, estimateCaHybridUsd, proxyGbFromApifyRun, usdFromApifyRun } from './spend.js';
 import { isWaterfallReady } from './waterfall.js';
 import { lookupBusinessOwner } from '../../../services/lookupBusinessOwner.js';
 import { resetJobsForTests } from './jobs.js';
@@ -90,6 +91,10 @@ describe('CA batch pageFunction source', () => {
     assert.match(src, /businessSearch/);
     assert.match(src, /waitForResponse/);
     assert.match(src, /\.type\(/);
+    assert.match(src, /has-text\("Execute search"\)/);
+    assert.match(src, /Search by name or file number/);
+    assert.match(src, /block_page_before_search/);
+    assert.match(src, /jitter\(3e4,\s*6e4\)|jitter\(30000,\s*60000\)/);
     assert.match(src, /has-text\("Search"\)/);
     assert.match(src, /waf_429/);
     assert.match(src, /caBatchIsWafBlock/);
@@ -226,6 +231,46 @@ describe('CA batch spend + checkpoint', () => {
     assert.ok(estimateCaBatchUsd(400) < 2);
   });
 
+  it('prices a 3-company hybrid run well under APIFY_MAX_USD=2', () => {
+    assert.ok(estimateCaHybridUsd(3) < 0.5);
+    assert.ok(estimateCaHybridUsd(3) > 0);
+  });
+
+  it('hybrids blocked UI rows, not confirmed matches or real not_found', () => {
+    assert.equal(
+      caBatchShouldHybrid({
+        company_name: 'A',
+        city: '',
+        state: 'CA',
+        status: 'blocked',
+        retries: 1,
+        error: 'search_input_missing',
+      }),
+      true,
+    );
+    assert.equal(
+      caBatchShouldHybrid({
+        company_name: 'A',
+        city: '',
+        state: 'CA',
+        status: 'ok',
+        retries: 0,
+        entity_id: '1',
+      }),
+      false,
+    );
+    assert.equal(
+      caBatchShouldHybrid({
+        company_name: 'A',
+        city: '',
+        state: 'CA',
+        status: 'not_found',
+        retries: 0,
+      }),
+      false,
+    );
+  });
+
   it('reads CU and residential proxy GB from an Apify run', () => {
     const cost = usdFromApifyRun({
       status: 'SUCCEEDED',
@@ -313,8 +358,16 @@ describe('CA batch spend + checkpoint', () => {
     assert.equal(runPosts, 1);
     assert.equal(captured?.proxyRotation, 'UNTIL_FAILURE');
     assert.equal(captured?.maxConcurrency, 1);
-    const proxy = captured?.proxyConfiguration as { apifyProxyGroups?: string[] };
+    assert.equal(captured?.maxRequestRetries, 0);
+    assert.equal(captured?.pageFunctionTimeoutSecs, 600);
+    assert.equal(captured?.pageLoadTimeoutSecs, 180);
+    assert.equal(captured?.requestHandlerTimeoutSecs, 600);
+    assert.equal(captured?.useChrome, true);
+    assert.equal(captured?.headless, false);
+    assert.equal(captured?.sessionPoolName, 'ca_bizfile_sticky');
+    const proxy = captured?.proxyConfiguration as { apifyProxyGroups?: string[]; apifyProxyCountry?: string };
     assert.deepEqual(proxy?.apifyProxyGroups, ['RESIDENTIAL']);
+    assert.equal(proxy?.apifyProxyCountry, 'US');
     const startUrls = captured?.startUrls as Array<{ userData?: { companies?: unknown[] } }>;
     assert.equal(startUrls[0]?.userData?.companies?.length, 1);
     assert.equal((startUrls[0]?.userData as { debug?: boolean })?.debug, true);
@@ -401,6 +454,88 @@ describe('CA batch spend + checkpoint', () => {
     assert.equal(got.results[1]?.coverage_reason, 'not_found');
     const saved = loadCaBatchCheckpoint(checkpointPath, 'job-resume');
     assert.equal(saved.items[caBatchCompanyKey('Next Co', 'Oakland')]?.status, 'not_found');
+  });
+
+  it('falls back to dz_omar + web-fetch when the UI search box never appears', async () => {
+    const spend = new ApifySpendTracker();
+    const tmp = mkdtempSync(join(tmpdir(), 'ca-batch-'));
+    const checkpointPath = join(tmp, 'ckpt.json');
+    const actors: string[] = [];
+    const si = readFileSync(join(dir, 'ca-si-officer-table.txt'), 'utf8');
+    const hybridRows = JSON.parse(readFileSync(join(dir, 'ca-hybrid-dz-omar.json'), 'utf8'));
+    let runSeq = 0;
+    const fetchFn: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes('/acts/') && init?.method === 'POST') {
+        const actor = url.includes('dz_omar')
+          ? 'dz_omar'
+          : url.includes('web-fetch')
+            ? 'web-fetch'
+            : 'playwright';
+        actors.push(actor);
+        runSeq += 1;
+        const id = `run-${actor}-${runSeq}`;
+        const ds = `ds-${actor}-${runSeq}`;
+        return new Response(
+          JSON.stringify({
+            data: {
+              id,
+              status: 'SUCCEEDED',
+              defaultDatasetId: ds,
+              usageTotalUsd: actor === 'playwright' ? 0.08 : 0.03,
+              stats: { computeUnits: 0.1 },
+            },
+          }),
+          { status: 201, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/datasets/ds-playwright') && url.includes('/items')) {
+        return new Response(
+          JSON.stringify([
+            {
+              company_name: 'Sample Builders LLC',
+              city: 'Oakland',
+              state: 'CA',
+              status: 'blocked',
+              retries: 1,
+              error: 'search_input_missing',
+              debug_steps: [{ step: 'search_input', status: 0, error: 'search_input_missing', bytes: 512 }],
+            },
+          ]),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('/datasets/ds-dz_omar') && url.includes('/items')) {
+        return new Response(JSON.stringify(hybridRows), { headers: { 'content-type': 'application/json' } });
+      }
+      if (url.includes('/datasets/ds-web-fetch') && url.includes('/items')) {
+        return new Response(JSON.stringify([{ text: si, markdown: si }]), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('/actor-runs/')) {
+        return new Response(JSON.stringify({ data: { status: 'SUCCEEDED' } }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('[]', { headers: { 'content-type': 'application/json' } });
+    };
+    const got = await runCaBatch(
+      [{ company_name: 'Sample Builders LLC', city: 'Oakland', state: 'CA' }],
+      {
+        live: true,
+        apifyToken: 'token',
+        spend,
+        fetch: fetchFn,
+        caBatchCheckpointPath: checkpointPath,
+      },
+      { jobId: 'job-hybrid', checkpointPath },
+    );
+    assert.deepEqual(actors, ['playwright', 'dz_omar', 'web-fetch']);
+    assert.equal(got.hybridUsed, true);
+    assert.equal(got.results[0]?.entity_id, '202399900002');
+    assert.ok(got.results[0]?.people.some((p) => isWaterfallReady(p)));
+    assert.ok((got.perCompanyUsd || 0) >= 0);
   });
 
   it('refuses a new run at APIFY_MAX_USD without charging', async () => {

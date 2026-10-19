@@ -147,3 +147,15 @@ export function estimateCaBatchUsd(companyCount: number): number {
   const runs = Math.ceil(companyCount / CA_BATCH_COMPANIES_PER_RUN);
   return Number((runs * CA_BATCH_USD_BASE + companyCount * CA_BATCH_USD_PER_COMPANY).toFixed(2));
 }
+
+/** Ceiling for dz_omar search+history (one run) plus web-fetch SI PDFs. FREE-tier event prices. */
+export function estimateCaHybridUsd(companyCount: number): number {
+  const n = Math.max(0, companyCount);
+  if (!n) return 0;
+  const start = 0.005;
+  const search = 0.025 * n;
+  const records = 0.003 * n * 8;
+  const history = 0.004 * n;
+  const pdf = 0.002 * n;
+  return Number((start + search + records + history + pdf).toFixed(2));
+}

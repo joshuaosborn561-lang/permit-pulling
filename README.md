@@ -74,11 +74,11 @@ Required CSV columns: `company` (or `company_name`), `city`, `state`.
 
 Summary prints hit rate per state, officer vs agent-only counts, Serper credits, Apify $ / CU / residential GB. Permit/license lookup is unchanged (`match_state_owners`).
 
-50-company CA batched probe (Apify residential only, no new proxy vendor). Smoke 5 rows with `--ca-debug` first; use a **new** checkpoint so a prior 0/40 `not_found` file is not reused:
+CA batched probe (Apify residential only). Smoke **3** rows with `--ca-debug` and `APIFY_MAX_USD=2` first. Use a **new** checkpoint. If the UI search box never appears, the job falls back to dz_omar search+history + web-fetch SI PDFs.
 
 ```bash
-export APIFY_TOKEN=... APIFY_MAX_USD=5
-npx tsx scripts/owner_lookup_sample.ts --in ca-5.csv --out ca-5-results.csv --ca-batch --states CA --no-serper --ca-debug --checkpoint /tmp/ca-batch-5.json
+export APIFY_TOKEN=... APIFY_MAX_USD=2
+npx tsx scripts/owner_lookup_sample.ts --in ca-3.csv --out ca-3-results.csv --ca-batch --states CA --no-serper --ca-debug --checkpoint /tmp/ca-batch-3.json
 ```
 
 Claude connector: `https://workspace-production-4702.up.railway.app/mcp` (authless).

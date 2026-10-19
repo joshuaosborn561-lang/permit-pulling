@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { isChallengePage } from '../http.js';
 import { CA_BATCH_POLL_MAX_MS, runPlaywrightActor } from './apifyPlaywright.js';
 import { caBatchPageFunctionSource } from './caBatchPageFunction.js';
+import { caBatchShouldHybrid, runCaHybrid } from './caHybrid.js';
 import {
   CA_BATCH_UI,
   caBatchCompanyKey,
@@ -21,6 +22,7 @@ import {
   CA_BATCH_COMPANIES_PER_RUN,
   CA_BATCH_ITEM_RETRIES,
   estimateCaBatchUsd,
+  estimateCaHybridUsd,
 } from './spend.js';
 import type { CoverageReason } from '../types.js';
 import type { NameLookupInput, NameLookupResult } from './types.js';
@@ -58,6 +60,8 @@ export interface CaBatchRunResult {
   cu: number;
   proxyGb: number;
   runs: number;
+  hybridUsed?: boolean;
+  perCompanyUsd?: number;
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -320,8 +324,32 @@ export async function runCaBatch(
         saveCaBatchCheckpoint(checkpointPath, checkpoint);
         if (run.refused) {
           empty.refused = true;
-          break;
         }
+        const hybridNeed = group.filter((company) =>
+          caBatchShouldHybrid(checkpoint.items[caBatchCompanyKey(company.company_name, company.city)]),
+        );
+        if (hybridNeed.length) {
+          const hybridEst = estimateCaHybridUsd(hybridNeed.length);
+          if (spend.wouldExceed(hybridEst)) {
+            spend.refuse();
+            empty.refused = true;
+          } else {
+            const hybrid = await runCaHybrid(hybridNeed, ctx);
+            empty.runs += hybrid.runs;
+            empty.usd = Number((empty.usd + hybrid.usd).toFixed(4));
+            empty.cu += hybrid.cu;
+            empty.proxyGb = Number((empty.proxyGb + hybrid.proxyGb).toFixed(6));
+            empty.hybridUsed = true;
+            empty.perCompanyUsd = hybrid.perCompanyUsd;
+            for (const item of hybrid.items) {
+              const key = caBatchCompanyKey(item.company_name, item.city);
+              checkpoint.items[key] = item;
+            }
+            saveCaBatchCheckpoint(checkpointPath, checkpoint);
+            if (hybrid.refused) empty.refused = true;
+          }
+        }
+        if (empty.refused && !hybridNeed.length) break;
       }
     }
   } else {

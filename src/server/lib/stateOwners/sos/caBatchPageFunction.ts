@@ -82,36 +82,83 @@ async function pageFunction(context: {
     return null;
   }
 
+  function pageLooksBlocked(html: string): boolean {
+    const text = String(html || '');
+    if (caBatchIsWafBlock(0, text) || caBatchIsChallenge(text)) return true;
+    const compact = text.replace(/\s+/g, '');
+    return compact.length > 0 && compact.length < 1200;
+  }
+
+  async function findSearchInput(): Promise<any> {
+    try {
+      const byPh = page.getByPlaceholder(/search by name or file number/i).first();
+      if ((await byPh.count()) > 0 && (await byPh.isVisible())) return byPh;
+    } catch {
+      /* CSS fallback */
+    }
+    try {
+      const byRole = page.getByRole('textbox', { name: /search by name or file number/i }).first();
+      if ((await byRole.count()) > 0 && (await byRole.isVisible())) return byRole;
+    } catch {
+      /* CSS fallback */
+    }
+    try {
+      const combo = page.getByRole('combobox', { name: /search/i }).first();
+      if ((await combo.count()) > 0 && (await combo.isVisible())) return combo;
+    } catch {
+      /* CSS fallback */
+    }
+    return visibleLocator([
+      'input[placeholder*="Search by name or file number" i]',
+      'input[placeholder*="Search" i]',
+      'input[aria-label*="Search" i]',
+      '[role="combobox"]',
+      '[role="searchbox"]',
+      'input[type="search"]',
+      'input[name="search"]',
+      'input[type="text"]',
+      '.search input',
+      'input.form-control',
+    ]);
+  }
+
   async function waitClear(): Promise<boolean> {
-    for (let i = 0; i < 40; i++) {
+    await page.waitForTimeout(jitter(8000, 12000));
+    for (let i = 0; i < 3; i++) {
       const html = await page.content();
-      if (!caBatchIsChallenge(html)) {
-        const input = await visibleLocator([
-          'input[placeholder*="Search" i]',
-          'input[aria-label*="Search" i]',
-          'input[type="search"]',
-          'input[name="search"]',
-          'input[type="text"]',
-        ]);
-        if (input) return true;
-        if (i > 6) return true;
-      }
-      await page.waitForTimeout(1500);
-      if (i % 8 === 7) {
+      if (pageLooksBlocked(html)) {
+        await page.waitForTimeout(jitter(30000, 60000));
         try {
-          await page.reload({ waitUntil: 'domcontentloaded' });
+          await page.goto(CA_BATCH_UI, { waitUntil: 'load', timeout: 180000 });
         } catch {
           /* keep waiting */
         }
+        await page.waitForTimeout(jitter(8000, 12000));
+        continue;
       }
+      const input = await findSearchInput();
+      if (input) return true;
+      try {
+        await page.waitForSelector(
+          'input[placeholder*="Search" i], input[placeholder*="file number" i], [role="combobox"], [role="searchbox"]',
+          { timeout: 15000 },
+        );
+        const again = await findSearchInput();
+        if (again) return true;
+      } catch {
+        /* not hydrated yet */
+      }
+      await page.waitForTimeout(jitter(2000, 4000));
     }
     const last = await page.content();
-    return !caBatchIsChallenge(last);
+    if (pageLooksBlocked(last)) return false;
+    return Boolean(await findSearchInput());
   }
 
   async function reclear(): Promise<boolean> {
+    await page.waitForTimeout(jitter(30000, 60000));
     try {
-      await page.goto(CA_BATCH_UI, { waitUntil: 'domcontentloaded' });
+      await page.goto(CA_BATCH_UI, { waitUntil: 'load', timeout: 180000 });
     } catch {
       /* still try waitClear */
     }
@@ -206,7 +253,7 @@ async function pageFunction(context: {
 
   async function ensureSearchPage(steps: Array<Record<string, unknown>>): Promise<boolean> {
     try {
-      await page.goto(CA_BATCH_UI, { waitUntil: 'domcontentloaded' });
+      await page.goto(CA_BATCH_UI, { waitUntil: 'load', timeout: 180000 });
     } catch {
       /* waitClear */
     }
@@ -216,20 +263,18 @@ async function pageFunction(context: {
   }
 
   async function searchViaUi(name: string, steps: Array<Record<string, unknown>>) {
-    const input = await visibleLocator([
-      'input[placeholder*="Search" i]',
-      'input[aria-label*="Search" i]',
-      'input[type="search"]',
-      'input[name="search"]',
-      'input[type="text"]',
-      '.search input',
-      'input.form-control',
-    ]);
+    const html = await page.content();
+    dbg(steps, 'pre_search', { status: pageLooksBlocked(html) ? 429 : 200, bytes: html.length });
+    if (pageLooksBlocked(html)) {
+      dbg(steps, 'search_input', { status: 429, error: 'block_page_before_search' });
+      return { status: 429, text: html.slice(0, 4000), latin1: html.slice(0, 4000), contentType: 'text/html' };
+    }
+    const input = await findSearchInput();
     if (!input) {
-      dbg(steps, 'search_input', { status: 0, error: 'search_input_missing' });
+      dbg(steps, 'search_input', { status: 0, error: 'search_input_missing', bytes: html.length });
       return { status: 0, text: '', latin1: '', contentType: '' };
     }
-    const pending = waitUrl('businessSearch', 45000);
+    const pending = waitUrl('businesssearch', 45000);
     try {
       await input.click({ clickCount: 3 });
     } catch {
@@ -244,6 +289,9 @@ async function pageFunction(context: {
     await input.type(name, { delay: jitter(45, 100) });
     await page.waitForTimeout(jitter(280, 750));
     const btn = await visibleLocator([
+      'button[aria-label*="Execute search" i]',
+      'button:has-text("Execute search")',
+      '[aria-label*="Execute search" i]',
       'button:has-text("Search")',
       'button:has-text("SEARCH")',
       '[role="button"]:has-text("Search")',
