@@ -4,6 +4,7 @@ export * from './match.js';
 export * from './waterfall.js';
 export * from './caBizfile.js';
 export * from './caSi.js';
+export * from './caBatch.js';
 export * from './namePath.js';
 export * from './jobs.js';
 export * from './context.js';

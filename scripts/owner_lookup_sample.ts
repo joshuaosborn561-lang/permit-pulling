@@ -15,9 +15,11 @@ import {
   resultToCsvRow,
   summarizeSample,
 } from '../src/server/lib/stateOwners/sos/sampleCsv.ts';
+import { runCaBatch } from '../src/server/lib/stateOwners/sos/caBatch.ts';
 import { resolveNameLookup } from '../src/server/lib/stateOwners/sos/namePath.ts';
 import { mapPool } from '../src/server/lib/stateOwners/sos/pool.ts';
-import { ApifySpendTracker, SerperCreditTracker } from '../src/server/lib/stateOwners/sos/spend.ts';
+import { ApifySpendTracker, SerperCreditTracker, estimateCaBatchUsd } from '../src/server/lib/stateOwners/sos/spend.ts';
+import { normalizeState } from '../src/server/lib/stateOwners/names.ts';
 
 function arg(flag: string, fallback?: string): string | undefined {
   const idx = process.argv.indexOf(flag);
@@ -43,11 +45,17 @@ Options:
   --include-agents     Include registered-agent people (still not waterfall-ready)
   --no-serper          Skip google.serper.dev (default: Serper-first for every state)
   --no-apify           Never call Apify Playwright (fallback only after Serper miss)
+  --ca-batch           CA SOS batched Playwright: Incapsula once, then hundreds of companies
+  --checkpoint <path>  Resume file for --ca-batch (default: tmpdir)
   --il-dta-dir <path>  Illinois Data Transparency Act files (or env IL_DTA_DIR)
   --live false         Skip official HTTP (fixture/offline)
 
-Env: SERPER_API_KEY, APIFY_TOKEN, APIFY_MAX_USD, IL_DTA_DIR
+Env: SERPER_API_KEY, APIFY_TOKEN, APIFY_MAX_USD, IL_DTA_DIR, CA_BATCH_CHECKPOINT
 No Supabase writes. Permit/license path is unchanged (match_state_owners).
+
+50-company CA probe (Apify residential, no new proxy vendor):
+  export APIFY_TOKEN=... APIFY_MAX_USD=5
+  npx tsx scripts/owner_lookup_sample.ts --in ca-50.csv --out ca-50-results.csv --ca-batch --states CA --no-serper
 `);
 }
 
@@ -71,21 +79,46 @@ async function main(): Promise<void> {
   const live = arg('--live') === 'false' || hasFlag('--offline') ? false : true;
   const spend = new ApifySpendTracker();
   const serper = new SerperCreditTracker();
+  const caBatch = hasFlag('--ca-batch');
   const ctx = defaultLookupContext({
     live,
     includeAgents: hasFlag('--include-agents'),
     apifyEnabled: !hasFlag('--no-apify'),
-    serperEnabled: !hasFlag('--no-serper'),
+    serperEnabled: caBatch ? false : !hasFlag('--no-serper'),
     ilDtaDir: arg('--il-dta-dir') || process.env.IL_DTA_DIR || null,
+    caBatchCheckpointPath: arg('--checkpoint') || undefined,
     spend,
     serper,
   });
   const inputRows = await readCompanyCsv(resolve(inPath));
   const filtered = states.length ? inputRows.filter((r) => states.includes(r.state)) : inputRows;
-  const lines = await mapPool(filtered, concurrency, async (row) => {
-    const result = await resolveNameLookup(row, ctx);
-    return resultToCsvRow(row, result);
-  });
+  const caRows = filtered.filter((r) => normalizeState(r.state) === 'CA');
+  const otherRows = filtered.filter((r) => normalizeState(r.state) !== 'CA');
+  const lines = [];
+  if (caBatch && caRows.length) {
+    const batch = await runCaBatch(caRows, ctx, {
+      jobId: 'cli-ca-batch',
+      checkpointPath: arg('--checkpoint') || ctx.caBatchCheckpointPath,
+    });
+    for (let i = 0; i < caRows.length; i++) {
+      lines.push(resultToCsvRow(caRows[i], batch.results[i]));
+    }
+  } else if (!caBatch) {
+    lines.push(
+      ...(await mapPool(filtered, concurrency, async (row) => {
+        const result = await resolveNameLookup(row, ctx);
+        return resultToCsvRow(row, result);
+      })),
+    );
+  }
+  if (caBatch && otherRows.length) {
+    lines.push(
+      ...(await mapPool(otherRows, concurrency, async (row) => {
+        const result = await resolveNameLookup(row, ctx);
+        return resultToCsvRow(row, result);
+      })),
+    );
+  }
   const csv = formatSampleCsv(lines);
   const outAbs = resolve(outPath);
   mkdirSync(dirname(outAbs), { recursive: true });
@@ -95,7 +128,14 @@ async function main(): Promise<void> {
   summary.serper_credits = serper.credits || summary.serper_credits;
   summary.serper_usd = Number((serper.usd || summary.serper_usd).toFixed(4));
   const summaryPath = resolve(arg('--summary') || `${outAbs}.summary.json`);
-  writeFileSync(summaryPath, JSON.stringify(summary, null, 2) + '\n', 'utf8');
+  const payload = {
+    ...summary,
+    ca_batch: caBatch,
+    apify_compute_units: Number(spend.computeUnits.toFixed(4)),
+    apify_proxy_gb: Number(spend.proxyGb.toFixed(4)),
+    apify_estimate_usd: caBatch ? estimateCaBatchUsd(caRows.length) : summary.apify_usd_spent,
+  };
+  writeFileSync(summaryPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
   process.stdout.write(
     JSON.stringify(
       {
@@ -109,7 +149,10 @@ async function main(): Promise<void> {
         hit_rate: summary.hit_rate,
         hit_rate_by_state: summary.hit_rate_by_state,
         officer_vs_agent: summary.officer_vs_agent,
+        ca_batch: caBatch,
         apify_usd_spent: summary.apify_usd_spent,
+        apify_compute_units: payload.apify_compute_units,
+        apify_proxy_gb: payload.apify_proxy_gb,
         serper_credits: summary.serper_credits,
         serper_usd: summary.serper_usd,
         via_serper: summary.via_serper,

@@ -17,6 +17,19 @@ Registered Agent: CT CORPORATION SYSTEM
     assert.equal(rows[0]?.role, 'officer');
   });
 
+  it('reads consecutive Directors and Managers names from an SI table', () => {
+    const text = `Directors
+JANE SAMPLE
+ALEX SAMPLE
+Managers
+PAT MORGAN`;
+    const rows = parseOfficerRoster(text);
+    assert.deepEqual(
+      rows.map((r) => r.name),
+      ['JANE SAMPLE', 'ALEX SAMPLE', 'PAT MORGAN'],
+    );
+  });
+
   it('reads HTML officer tables', () => {
     const html = `<table><tr><th>Title</th><th>Name</th></tr><tr><td>Manager</td><td>JANE SAMPLE</td></tr></table>`;
     const rows = parseOfficerRoster(html);

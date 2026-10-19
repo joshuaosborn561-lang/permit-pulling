@@ -52,6 +52,27 @@ export interface LookupContext {
     bytesBase64?: string;
     contentType?: string;
   }>;
+  /** Host-side CA batch checkpoint path (resume). */
+  caBatchCheckpointPath?: string;
+  /** Fixture dataset items — skip the live Playwright run. */
+  caBatchItems?: Array<{
+    company_name: string;
+    city: string;
+    state: string;
+    status: 'ok' | 'not_found' | 'blocked' | 'error';
+    retries: number;
+    entity_id?: string;
+    business_name?: string;
+    match_method?: 'exact' | 'substring' | 'trigram';
+    match_score?: number;
+    source_url?: string;
+    document_id?: string;
+    officers_text?: string;
+    bytesBase64?: string;
+    contentType?: string;
+    agent_name?: string;
+    error?: string;
+  }>;
 }
 
 export function apifyTokenFromEnv(): string | null {

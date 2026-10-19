@@ -16,11 +16,13 @@ import {
 } from '../lib/stateOwners/sos/index.js';
 import { defaultLookupContext } from '../lib/stateOwners/sos/context.js';
 import { mapPool } from '../lib/stateOwners/sos/pool.js';
+import { runCaBatch } from '../lib/stateOwners/sos/caBatch.js';
 import {
   APIFY_USD_PER_BLOCKED_LOOKUP,
   CA_APIFY_LOOKUPS_PER_ROW,
   SERPER_QUERIES_PER_ROW,
   SERPER_USD_PER_QUERY,
+  estimateCaBatchUsd,
   estimateSerperCredits,
   estimateSerperUsd,
 } from '../lib/stateOwners/sos/spend.js';
@@ -54,14 +56,21 @@ export interface LookupBusinessOwnerOpts {
   wait?: boolean;
   context?: LookupContext;
   concurrency?: number;
+  /** One sticky Playwright session for CA (Incapsula once, then hundreds of companies). */
+  ca_batch?: boolean;
 }
 
 function emptyStateStats() {
   return { attempted: 0, named: 0, agent_only: 0, hit_rate: 0 };
 }
 
-export function estimateApifyUsd(inputs: NameLookupInput[]): number {
+export function estimateApifyUsd(inputs: NameLookupInput[], opts?: { ca_batch?: boolean }): number {
   const catalog = catalogByCode();
+  if (opts?.ca_batch) {
+    const ca = inputs.filter((row) => normalizeState(row.state) === 'CA');
+    const other = inputs.filter((row) => normalizeState(row.state) !== 'CA');
+    return Number((estimateCaBatchUsd(ca.length) + estimateApifyUsd(other)).toFixed(2));
+  }
   let blocked = 0;
   for (const row of inputs) {
     const st = normalizeState(row.state);
@@ -107,7 +116,10 @@ export function firstUseEnvelope(): Record<string, unknown> {
     serper_note:
       'Serper-first (google.serper.dev, SERPER_API_KEY): 5 queries/row (generic + OpenCorporates + Bizapedia + Sunbiz + state SOS). Apify Playwright is only the fallback when Serper does not return a high-confidence owner, behind APIFY_MAX_USD.',
     ca_note:
-      'calicodev/calico developer API is government-agencies-only. Public bizfileOnline + SI; Apify Playwright + residential when Incapsula/Imperva blocks datacenter IPs.',
+      'calicodev/calico developer API is government-agencies-only. Public bizfileOnline + SI; Apify Playwright + residential when Incapsula/Imperva blocks datacenter IPs. ca_batch / --ca-batch: one sticky Playwright session (groups-RESIDENTIAL), Incapsula once, then hundreds of companies (search + SI PDF).',
+    ca_batch_usd_50: estimateCaBatchUsd(50),
+    ca_batch_probe:
+      'npx tsx scripts/owner_lookup_sample.ts --in ca-50.csv --out ca-50-results.csv --ca-batch --states CA --no-serper',
   };
 }
 
@@ -150,6 +162,9 @@ function emptySnapshot(
     hit_rate_by_state: {},
     apify_estimate_usd: estimateUsd,
     apify_usd_spent: 0,
+    apify_compute_units: 0,
+    apify_proxy_gb: 0,
+    ca_batch: opts.ca_batch === true,
     via_apify: 0,
     serper_estimate_credits: serperCredits,
     serper_estimate_usd: serperUsd,
@@ -162,6 +177,37 @@ function emptySnapshot(
     sample: [],
     started_at: new Date().toISOString(),
   };
+}
+
+function applyLookupHit(
+  snapshot: BusinessOwnerJobSnapshot,
+  row: NameLookupInput,
+  result: NameLookupResult,
+  samples: BusinessOwnerNamelessSample[],
+  total: number,
+): void {
+  const st = normalizeState(row.state) || 'UNK';
+  const stats = snapshot.hit_rate_by_state[st] ?? emptyStateStats();
+  stats.attempted += 1;
+  const named =
+    result.source === 'ca_bizfile'
+      ? Boolean(result.entity_id) && result.people.some((p) => isWaterfallReady(p))
+      : result.people.some((p) => isWaterfallReady(p));
+  if (named) stats.named += 1;
+  if (result.coverage_reason === 'agent_only') stats.agent_only += 1;
+  stats.hit_rate = stats.attempted ? Number((stats.named / stats.attempted).toFixed(3)) : 0;
+  snapshot.hit_rate_by_state[st] = stats;
+  snapshot.processed += 1;
+  snapshot.remaining = Math.max(0, total - snapshot.processed);
+  if (named) snapshot.named += 1;
+  if (result.coverage_reason === 'agent_only') snapshot.agent_only += 1;
+  if (result.via_apify) snapshot.via_apify += 1;
+  if (result.via_serper || (result.serper_credits || 0) > 0) snapshot.via_serper += 1;
+  if (result.ocr_used) snapshot.ocr_used += 1;
+  snapshot.apify_usd_spent = Number((snapshot.apify_usd_spent + (result.apify_usd || 0)).toFixed(4));
+  snapshot.serper_credits += result.serper_credits || 0;
+  snapshot.serper_usd = Number((snapshot.serper_usd + (result.serper_usd || 0)).toFixed(4));
+  if (samples.length < 10) samples.push(namelessSample(result));
 }
 
 async function runLookupJob(
@@ -178,33 +224,34 @@ async function runLookupJob(
   const lanes = Math.max(1, Math.min(opts.concurrency ?? SOS_HTTP_LANES, 8));
   const samples: BusinessOwnerNamelessSample[] = [];
   try {
-    const resolved = await mapPool(rows, lanes, async (row) => ({
-      row,
-      result: await resolveNameLookup(row, ctx),
-    }));
+    const caBatch = opts.ca_batch === true;
+    snapshot.ca_batch = caBatch;
+    const caRows = caBatch ? rows.filter((row) => normalizeState(row.state) === 'CA') : [];
+    const otherRows = caBatch ? rows.filter((row) => normalizeState(row.state) !== 'CA') : rows;
+    const resolved: Array<{ row: NameLookupInput; result: NameLookupResult }> = [];
+    if (caRows.length) {
+      const batch = await runCaBatch(caRows, ctx, {
+        jobId: snapshot.job_id,
+        checkpointPath: ctx.caBatchCheckpointPath,
+      });
+      for (let i = 0; i < caRows.length; i++) {
+        resolved.push({ row: caRows[i], result: batch.results[i] });
+      }
+    }
+    if (otherRows.length) {
+      const rest = await mapPool(otherRows, lanes, async (row) => ({
+        row,
+        result: await resolveNameLookup(row, ctx),
+      }));
+      resolved.push(...rest);
+    }
     for (const { row, result } of resolved) {
-      const st = normalizeState(row.state) || 'UNK';
-      const stats = snapshot.hit_rate_by_state[st] ?? emptyStateStats();
-      stats.attempted += 1;
-      const named = result.people.some((p) => isWaterfallReady(p));
-      if (named) stats.named += 1;
-      if (result.coverage_reason === 'agent_only') stats.agent_only += 1;
-      stats.hit_rate = stats.attempted ? Number((stats.named / stats.attempted).toFixed(3)) : 0;
-      snapshot.hit_rate_by_state[st] = stats;
-      snapshot.processed += 1;
-      snapshot.remaining = Math.max(0, rows.length - snapshot.processed);
-      if (named) snapshot.named += 1;
-      if (result.coverage_reason === 'agent_only') snapshot.agent_only += 1;
-      if (result.via_apify) snapshot.via_apify += 1;
-      if (result.via_serper || (result.serper_credits || 0) > 0) snapshot.via_serper += 1;
-      if (result.ocr_used) snapshot.ocr_used += 1;
-      snapshot.apify_usd_spent = Number((snapshot.apify_usd_spent + (result.apify_usd || 0)).toFixed(4));
-      snapshot.serper_credits += result.serper_credits || 0;
-      snapshot.serper_usd = Number((snapshot.serper_usd + (result.serper_usd || 0)).toFixed(4));
-      if (samples.length < 10) samples.push(namelessSample(result));
+      applyLookupHit(snapshot, row, result, samples, rows.length);
     }
     snapshot.sample = samples;
     snapshot.apify_usd_spent = Number((ctx.spend?.usd ?? snapshot.apify_usd_spent).toFixed(2));
+    snapshot.apify_compute_units = Number((ctx.spend?.computeUnits ?? snapshot.apify_compute_units ?? 0).toFixed(4));
+    snapshot.apify_proxy_gb = Number((ctx.spend?.proxyGb ?? snapshot.apify_proxy_gb ?? 0).toFixed(4));
     if (ctx.serper) {
       snapshot.serper_credits = ctx.serper.credits;
       snapshot.serper_usd = ctx.serper.usd;
@@ -219,6 +266,8 @@ async function runLookupJob(
     snapshot.error = err instanceof Error ? err.message : 'lookup failed';
     snapshot.finished_at = new Date().toISOString();
     snapshot.sample = samples;
+    snapshot.apify_compute_units = Number((ctx.spend?.computeUnits ?? snapshot.apify_compute_units ?? 0).toFixed(4));
+    snapshot.apify_proxy_gb = Number((ctx.spend?.proxyGb ?? snapshot.apify_proxy_gb ?? 0).toFixed(4));
     putJob(snapshot);
     return snapshot;
   }
@@ -234,9 +283,12 @@ export async function lookupBusinessOwner(opts: LookupBusinessOwnerOpts): Promis
 
   if (estimateOnly) {
     const n = rows.length || FIRST_USE_ASSUMED_TOTAL;
-    const apifyUsd = rows.length ? estimateApifyUsd(rows) : 0;
-    const serperCredits = estimateSerperCredits(n);
-    const serperUsd = estimateSerperUsd(n);
+    const caBatch = opts.ca_batch === true;
+    const caCount = rows.filter((row) => normalizeState(row.state) === 'CA').length;
+    const serperN = caBatch ? Math.max(0, (rows.length ? rows.length - caCount : n)) : n;
+    const apifyUsd = rows.length ? estimateApifyUsd(rows, { ca_batch: caBatch }) : caBatch ? estimateCaBatchUsd(n) : 0;
+    const serperCredits = estimateSerperCredits(serperN);
+    const serperUsd = estimateSerperUsd(serperN);
     const snapshot = emptySnapshot(jobId, opts, 0, apifyUsd, serperCredits, serperUsd);
     snapshot.status = 'completed';
     snapshot.estimate_only = true;
@@ -258,7 +310,7 @@ export async function lookupBusinessOwner(opts: LookupBusinessOwnerOpts): Promis
       josh_signup: [
         'Set SERPER_API_KEY (google.serper.dev). Serper is the first owner tier for every state — much cheaper than Apify.',
         'Do not sign up at calicodev.sos.ca.gov — the developer API is government-agencies-only',
-        'Confirm Apify CU + residential GB as fallback only (APIFY_TOKEN). Set APIFY_MAX_USD as a hard cap. Apify runs only when Serper does not return a high-confidence owner.',
+        'Confirm Apify CU + residential GB (APIFY_TOKEN, groups-RESIDENTIAL). Set APIFY_MAX_USD as a hard cap. ca_batch / --ca-batch: one Playwright session for CA (Incapsula once, then hundreds of companies). Apify otherwise runs only when Serper misses.',
         'Optional: CA weekly bulk if it includes Statement of Information officers',
         'Illinois Data Transparency Act bulk zips auto-download from ilsos.gov/data/bs (or set IL_DTA_DIR). Search UI scrape is forbidden; missing files are no_source.',
       ],
@@ -287,13 +339,16 @@ export async function lookupBusinessOwner(opts: LookupBusinessOwnerOpts): Promis
     };
   }
 
+  const caBatch = opts.ca_batch === true;
+  const caCount = rows.filter((row) => normalizeState(row.state) === 'CA').length;
+  const serperN = caBatch ? Math.max(0, rows.length - caCount) : rows.length;
   const snapshot = emptySnapshot(
     jobId,
     { ...opts, dry_run: dryRun },
     rows.length,
-    estimateApifyUsd(rows),
-    estimateSerperCredits(rows.length),
-    estimateSerperUsd(rows.length),
+    estimateApifyUsd(rows, { ca_batch: caBatch }),
+    estimateSerperCredits(serperN),
+    estimateSerperUsd(serperN),
   );
   snapshot.status = 'running';
   putJob(snapshot);

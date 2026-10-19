@@ -1202,9 +1202,9 @@ WHAT IT DOES: Routes each lead by state to CSLB / L&I / NYC DOB / NY DOS / MA CS
     {
       title: 'Lookup US business owners by company + city + state',
       description: `WHEN TO USE: Top-up bots need an owner/officer name with no permit or license number. Input is company name + city + state (optional domain). Batch via rows[] (preferred in this PR) or source_table+where later.
-WHAT IT DOES (Phase 2): Serper-first (google.serper.dev, SERPER_API_KEY) for every state — officer/owner Google query plus OpenCorporates/Bizapedia/SOS site query. Accept a person only if the snippet ties to the same company (fuzzy) and city or state. waterfall_ready only at high Serper confidence. Then official SOS. Apify Playwright is the blocked-HTML fallback when Serper cannot answer, behind APIFY_MAX_USD (refused runs $0). CA = public bizfileOnline + SI GetImageByNum. IL = DTA bulk zips or no_source. Blocked challenge pages are never matches. No CA_SOS_API_KEY. estimate_only = Serper credits + Apify fallback envelope, no SOS calls. Does NOT write, does NOT deploy. Permit lists still use match_state_owners.
-OUTPUT: counts, job_id, per-state hit rates, nameless samples, serper_credits, apify_usd_spent. Waterfall fields are not dumped in chat.
-NEXT: get_business_owner_job(job_id). Local CSV probe: npx tsx scripts/owner_lookup_sample.ts --in companies.csv --out results.csv`,
+WHAT IT DOES (Phase 2): Serper-first (google.serper.dev, SERPER_API_KEY) for every state — officer/owner Google query plus OpenCorporates/Bizapedia/SOS site query. Accept a person only if the snippet ties to the same company (fuzzy) and city or state. waterfall_ready only at high Serper confidence. Then official SOS. Apify Playwright is the blocked-HTML fallback when Serper cannot answer, behind APIFY_MAX_USD (refused runs $0). CA = public bizfileOnline + SI GetImageByNum. Set ca_batch=true for one sticky Playwright session (Apify residential, Incapsula once, then hundreds of CA companies; officers waterfall_ready only with a confirmed entity). IL = DTA bulk zips or no_source. Blocked challenge pages are never matches. No CA_SOS_API_KEY. estimate_only = Serper credits + Apify fallback envelope, no SOS calls. Does NOT write, does NOT deploy. Permit lists still use match_state_owners.
+OUTPUT: counts, job_id, per-state hit rates, nameless samples, serper_credits, apify_usd_spent, apify_compute_units, apify_proxy_gb. Waterfall fields are not dumped in chat.
+NEXT: get_business_owner_job(job_id). Local CSV probe: npx tsx scripts/owner_lookup_sample.ts --in companies.csv --out results.csv. 50-company CA batch: --ca-batch --states CA --no-serper.`,
       inputSchema: {
         source_table: z.string().optional().describe('Phase 2: schema.table. Do not paste lead rows into chat.'),
         where: z.string().optional().describe('Phase 2 SQL predicate for source_table'),
@@ -1227,6 +1227,10 @@ NEXT: get_business_owner_job(job_id). Local CSV probe: npx tsx scripts/owner_loo
         estimate_only: z.boolean().optional().describe('Cost + runtime envelope. No SOS calls.'),
         include_agents: z.boolean().optional().describe('Default false. Agents are never waterfall-ready.'),
         wait: z.boolean().optional().describe('Default true. If false, return job_id immediately and poll get_business_owner_job.'),
+        ca_batch: z
+          .boolean()
+          .optional()
+          .describe('CA only: one Playwright run, Incapsula once, then a batch of companies (search + SI PDF). Skips Serper for CA rows. Enforces APIFY_MAX_USD; reports CU + residential proxy GB.'),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -1243,7 +1247,7 @@ NEXT: get_business_owner_job(job_id). Local CSV probe: npx tsx scripts/owner_loo
     'get_business_owner_job',
     {
       title: 'Business owner lookup — job status',
-      description: `Poll lookup_business_owner. Returns status, processed/named/agent_only counts, remaining, per-state hit rates, serper_credits, apify_usd_spent. Never names.`,
+      description: `Poll lookup_business_owner. Returns status, processed/named/agent_only counts, remaining, per-state hit rates, serper_credits, apify_usd_spent, apify_compute_units, apify_proxy_gb. Never names.`,
       inputSchema: {
         job_id: z.string().min(1),
       },

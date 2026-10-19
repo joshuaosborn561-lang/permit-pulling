@@ -111,6 +111,9 @@ export interface BusinessOwnerJobSnapshot {
   hit_rate_by_state: Record<string, BusinessOwnerJobHitRate>;
   apify_estimate_usd: number;
   apify_usd_spent: number;
+  apify_compute_units?: number;
+  apify_proxy_gb?: number;
+  ca_batch?: boolean;
   via_apify: number;
   serper_estimate_credits: number;
   serper_estimate_usd: number;

@@ -17,10 +17,10 @@ export const STATE_SOS_CATALOG: StateSosCatalogEntry[] = [
     officers: 'filings_pdf',
     signup: 'None. calicodev/calico developer API is government-agencies-only — do not use it.',
     rate_limit: 'Unpublished; pace 1.2s, stop-after-3. Incapsula/Imperva blocks datacenter IPs.',
-    anti_bot: 'bizfileOnline is Incapsula/Imperva. Direct HTTP first; Apify Playwright + residential if blocked.',
+    anti_bot: 'bizfileOnline is Incapsula/Imperva. Direct HTTP first; Apify Playwright + residential if blocked. ca_batch: one sticky session, Incapsula once, then hundreds of companies.',
     apify: 'fallback',
     implement_order: 1,
-    notes: 'Public search + SI officers from GET /api/report/GetImageByNum/{documentId}. Never paid datasets. CSLB permit path still needs a license number.',
+    notes: 'Public search + SI officers from GET /api/report/GetImageByNum/{documentId}. Batched Playwright (groups-RESIDENTIAL, no extra proxy vendor) via ca_batch / --ca-batch. Never paid datasets. CSLB permit path still needs a license number.',
   }),
   row({
     code: 'IL',

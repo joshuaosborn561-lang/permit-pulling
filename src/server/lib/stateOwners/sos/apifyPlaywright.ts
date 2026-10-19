@@ -16,6 +16,8 @@ const ALLOWED_ACTORS = new Set([APIFY_PLAYWRIGHT_ACTOR, APIFY_PLAYWRIGHT_ACTOR_I
 const WAIT_FOR_FINISH_SEC = 60;
 const POLL_MS = 4000;
 const POLL_MAX_MS = 8 * 60 * 1000;
+/** One sticky CA session can run for tens of minutes (hundreds of companies). */
+export const CA_BATCH_POLL_MAX_MS = 45 * 60 * 1000;
 const BATCH_SIZE = 20;
 const BATCH_WAIT_MS = 80;
 
@@ -73,7 +75,8 @@ export interface ApifyHtmlResult {
 type RunData = {
   defaultDatasetId?: string;
   usageTotalUsd?: number;
-  stats?: { computeUnits?: number };
+  usage?: Record<string, number>;
+  stats?: { computeUnits?: number; netRxBytes?: number; netTxBytes?: number };
   id?: string;
   status?: string;
 };
@@ -109,10 +112,11 @@ async function pollRun(
   runId: string,
   token: string,
   fetchFn: typeof fetch,
+  pollMaxMs = POLL_MAX_MS,
 ): Promise<RunData | null> {
   const started = Date.now();
   let last: RunData | null = null;
-  while (Date.now() - started < POLL_MAX_MS) {
+  while (Date.now() - started < pollMaxMs) {
     const wrap = (await apifyJson(
       `https://api.apify.com/v2/actor-runs/${encodeURIComponent(runId)}?token=${encodeURIComponent(token)}`,
       { headers: { Accept: 'application/json', 'User-Agent': DESKTOP_UA } },
@@ -312,8 +316,8 @@ async function runActorPages(
 
   const succeeded = run?.status === 'SUCCEEDED';
   const cost = usdFromApifyRun(run, { succeeded });
-  if (cost.usd > 0 || cost.cu > 0) {
-    spend.add(cost.usd, { cu: cost.cu, lookups: unique.length });
+  if (cost.usd > 0 || cost.cu > 0 || cost.proxyGb > 0) {
+    spend.add(cost.usd, { cu: cost.cu, lookups: unique.length, proxyGb: cost.proxyGb });
   } else if (!succeeded) {
     spend.refuse();
   }
@@ -358,4 +362,138 @@ async function runActorPages(
     });
   }
   return out;
+}
+
+export interface PlaywrightActorStartUrl {
+  url: string;
+  userData?: Record<string, unknown>;
+}
+
+export interface PlaywrightActorRunResult {
+  items: Array<Record<string, unknown>>;
+  run: RunData | null;
+  refused: boolean;
+  succeeded: boolean;
+  usd: number;
+  cu: number;
+  proxyGb: number;
+  runId?: string;
+}
+
+function emptyActorRun(refused = true): PlaywrightActorRunResult {
+  return { items: [], run: null, refused, succeeded: false, usd: 0, cu: 0, proxyGb: 0 };
+}
+
+/**
+ * One playwright-scraper run with caller-supplied startUrls (including userData)
+ * and pageFunction. Sticky residential proxy. Used by the CA batch session.
+ */
+export async function runPlaywrightActor(
+  ctx: LookupContext | undefined,
+  opts: {
+    startUrls: PlaywrightActorStartUrl[];
+    pageFunction: string;
+    pollMaxMs?: number;
+    maxConcurrency?: number;
+    proxyRotation?: 'RECOMMENDED' | 'UNTIL_FAILURE' | 'PER_REQUEST';
+    maxRequestsPerCrawl?: number;
+    estimateUsd?: number;
+    lookups?: number;
+  },
+): Promise<PlaywrightActorRunResult> {
+  const token = ctx?.apifyToken?.trim();
+  if (!token || ctx?.apifyEnabled === false) {
+    ctxSpend(ctx).refuse();
+    return emptyActorRun(true);
+  }
+  const spend = ctxSpend(ctx);
+  const cap = capOf(ctx);
+  if (cap != null) spend.capUsd = cap;
+  if (spend.wouldExceed(opts.estimateUsd ?? APIFY_USD_PER_BLOCKED_LOOKUP)) {
+    spend.refuse();
+    return emptyActorRun(true);
+  }
+  if (!opts.startUrls.length || !opts.pageFunction) {
+    spend.refuse();
+    return emptyActorRun(true);
+  }
+
+  assertAllowedApifyActor(APIFY_PLAYWRIGHT_ACTOR);
+  const fetchFn = (ctx?.fetch as typeof fetch) ?? fetch;
+  const start = `https://api.apify.com/v2/acts/${APIFY_PLAYWRIGHT_ACTOR_ID}/runs?token=${encodeURIComponent(token)}&waitForFinish=${WAIT_FOR_FINISH_SEC}`;
+  const input = {
+    startUrls: opts.startUrls,
+    keepUrlFragments: false,
+    linkSelector: '',
+    globs: [],
+    pageFunction: opts.pageFunction,
+    proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] },
+    proxyRotation: opts.proxyRotation || 'UNTIL_FAILURE',
+    maxConcurrency: opts.maxConcurrency ?? 1,
+    maxRequestRetries: 2,
+    maxRequestsPerCrawl: opts.maxRequestsPerCrawl ?? 1,
+    downloadMedia: false,
+    downloadCss: false,
+    closeCookieModals: true,
+    waitUntil: 'domcontentloaded',
+    navigationTimeoutSecs: 120,
+    initialCookies: [],
+  };
+
+  let run: RunData | undefined;
+  try {
+    const runWrap = (await apifyJson(
+      start,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': DESKTOP_UA },
+        body: JSON.stringify(input),
+      },
+      fetchFn,
+    )) as { data?: RunData };
+    run = runWrap?.data;
+  } catch {
+    spend.refuse();
+    return emptyActorRun(true);
+  }
+
+  if (!run?.id && !run?.defaultDatasetId) {
+    spend.refuse();
+    return emptyActorRun(true);
+  }
+
+  if (run?.id && !runTerminal(run.status)) {
+    const polled = await pollRun(run.id, token, fetchFn, opts.pollMaxMs ?? POLL_MAX_MS);
+    if (polled) run = { ...run, ...polled };
+  }
+
+  const succeeded = run?.status === 'SUCCEEDED';
+  const cost = usdFromApifyRun(run, { succeeded });
+  if (cost.usd > 0 || cost.cu > 0 || cost.proxyGb > 0) {
+    spend.add(cost.usd, { cu: cost.cu, lookups: opts.lookups ?? opts.startUrls.length, proxyGb: cost.proxyGb });
+  } else if (!succeeded) {
+    spend.refuse();
+  }
+
+  const datasetId = run?.defaultDatasetId;
+  let items: Array<Record<string, unknown>> = [];
+  if (datasetId) {
+    const itemsWrap = await apifyJson(
+      `https://api.apify.com/v2/datasets/${datasetId}/items?token=${encodeURIComponent(token)}&clean=true`,
+      { headers: { Accept: 'application/json', 'User-Agent': DESKTOP_UA } },
+      fetchFn,
+    );
+    if (Array.isArray(itemsWrap)) items = itemsWrap as Array<Record<string, unknown>>;
+  }
+
+  return {
+    items,
+    run: run || null,
+    refused: !succeeded && items.length === 0,
+    succeeded,
+    usd: cost.usd,
+    cu: cost.cu,
+    proxyGb: cost.proxyGb,
+    runId: run?.id,
+  };
 }

@@ -27,7 +27,7 @@ const TITLE_ROLE: Array<{ re: RegExp; role: OwnerRole }> = [
 
 const TITLE =
   'Chief\\s+Executive\\s+Officer|Chief\\s+Financial\\s+Officer|Chief\\s+Operating\\s+Officer|' +
-  'President|Vice\\s+President|Secretary|Treasurer|Director|Manager|Managing\\s+Member|Member|' +
+  'President|Vice\\s+President|Secretary|Treasurer|Directors?|Managers?|Managing\\s+Member|Member|' +
   'CEO|CFO|COO|VP|Governor|Partner|Principal|Owner|Founder|Organizer|Officer';
 
 function caseInsensitiveTokenChars(raw: string): string {
@@ -182,7 +182,7 @@ export function parseOfficerRoster(textOrHtml: string): RosterEntry[] {
   const out: RosterEntry[] = [];
   const seen = new Set<string>();
 
-  const labeled = new RegExp(`${TITLE_BOUNDED}\\s*[:\\-#]*\\s*${CAP_NAME_CAPTURE}`, 'g');
+  const labeled = new RegExp(`${TITLE_BOUNDED}[ \\t]*[:\\-#]*[ \\t]*${CAP_NAME_CAPTURE}`, 'g');
   for (const hit of text.matchAll(labeled)) {
     const title = (hit[0] || '').split(/[:\-#]/)[0]?.trim() || 'Officer';
     pushEntry(out, seen, hit[1] || '', title, true);
@@ -193,7 +193,7 @@ export function parseOfficerRoster(textOrHtml: string): RosterEntry[] {
     pushEntry(out, seen, hit[1] || '', hit[2] || 'Officer', true);
   }
 
-  const nameField = new RegExp(`\\bName\\s*[:\\-]?\\s*${CAP_NAME_CAPTURE}`, 'g');
+  const nameField = new RegExp(`\\bName[ \\t]*[:\\-]?[ \\t]*${CAP_NAME_CAPTURE}`, 'g');
   for (const hit of text.matchAll(nameField)) {
     pushEntry(out, seen, hit[1] || '', 'Officer', true);
   }
@@ -207,9 +207,25 @@ export function parseOfficerRoster(textOrHtml: string): RosterEntry[] {
       continue;
     }
     if (isOfficerTitle(line)) {
-      const next = lines[i + 1] || '';
-      const nextName = next.replace(/^(name|full name|detail name)\s*[:\-]\s*/i, '');
-      if (nextName && !isOfficerTitle(nextName)) pushEntry(out, seen, nextName, line, true);
+      let j = i + 1;
+      let took = 0;
+      const many = /directors?|managers?/i.test(line);
+      while (j < lines.length) {
+        const next = lines[j];
+        if (isOfficerTitle(next)) break;
+        const nextName = next.replace(/^(name|full name|detail name)\s*[:\-]\s*/i, '');
+        if (!nextName) {
+          j += 1;
+          continue;
+        }
+        const before = out.length;
+        pushEntry(out, seen, nextName, line, true);
+        if (out.length === before) break;
+        took += 1;
+        j += 1;
+        if (!many) break;
+      }
+      if (took) i = j - 1;
     }
   }
 

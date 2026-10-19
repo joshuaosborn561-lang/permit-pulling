@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
-import { caSiImageUrl, caSiImageUrls, documentIdsFromPayload, fetchCaStatementOfficers } from './caSi.js';
+import { caSiImageUrl, caSiImageUrls, documentIdsFromPayload, fetchCaStatementOfficers, parseSiOfficerTable } from './caSi.js';
 import { parseOfficerRoster } from './officers.js';
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
@@ -14,6 +14,14 @@ describe('CA Statement of Information endpoints', () => {
     assert.match(url, /\/api\/report\/GetImageByNum\/081253081046137249104234083090073041121116001155$/);
     assert.equal(url.includes('fileNumber='), false);
     assert.equal(caSiImageUrls('abc')[0], caSiImageUrl('abc'));
+  });
+
+  it('parses CEO/CFO/Secretary/Directors/Managers from the recorded SI table', () => {
+    const text = readFileSync(join(dir, 'ca-si-officer-table.txt'), 'utf8');
+    const rows = parseSiOfficerTable(text);
+    assert.ok(rows.some((r) => r.name === 'JANE SAMPLE' && /CEO/i.test(r.title)));
+    assert.ok(rows.some((r) => r.name === 'ALEX SAMPLE'));
+    assert.ok(rows.some((r) => r.name === 'PAT MORGAN'));
   });
 
   it('reads document ids from the recorded history shape', () => {

@@ -34,6 +34,16 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+/**
+ * SI-550 / LLC-12 officer table (CEO, CFO, Secretary, Directors, Managers).
+ * Challenge HTML is never parsed. Host-side; pageFunction only extracts text.
+ */
+export function parseSiOfficerTable(text: string): RosterEntry[] {
+  const raw = String(text || '');
+  if (!raw.trim() || isChallengePage(raw)) return [];
+  return parseOfficerRoster(raw);
+}
+
 export function documentIdsFromPayload(payload: unknown): string[] {
   const ids: string[] = [];
   const seen = new Set<string>();

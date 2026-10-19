@@ -145,7 +145,7 @@ Implement adapters in this order. Do not skip ahead to a blocked state while CA 
   - JSON: `POST https://bizfileonline.sos.ca.gov/api/Records/businessSearch` with `SEARCH_VALUE` + `SEARCH_FILTER_TYPE_ID=search`
 - Cost of the search itself: **free** (official public site). Compute cost is Apify if the WAF blocks us.
 - Fields: entity number/name/status, addresses when present, often **agent**. **Officers are not reliably in the search JSON** — they come from Statement of Information (§5.3).
-- Anti-bot: **Incapsula / Imperva**. Datacenter IPs are blocked. **Direct HTTP first.** If the body is a challenge/403, **Apify Playwright + residential proxy** (`groups-RESIDENTIAL`) so the POST runs same-origin after a browser cookie. Never a paid CA dataset, never Unblocker.
+- Anti-bot: **Incapsula / Imperva**. Datacenter IPs are blocked. **Direct HTTP first.** If the body is a challenge/403, **Apify Playwright + residential proxy** (`groups-RESIDENTIAL`) so the POST runs same-origin after a browser cookie. **Batched CA path** (`ca_batch` / `--ca-batch`): one sticky Playwright run (`proxyRotation: UNTIL_FAILURE`, `maxConcurrency: 1`) clears Incapsula once, then POSTs `businessSearch` for hundreds of companies in the same session, fuzzy-matches name+city, fetches filing history, downloads the latest Statement of Information PDF in-session (SI PDFs return officer-table text: CEO, CFO, Secretary, Directors, Managers; OCR fallback for scans). Mid-session re-challenge: re-clear, retry the item, cap 3. Host checkpoint JSON resumes a failed run. Officers are `waterfall_ready` only with a confirmed `entity_id`. Enforce `APIFY_MAX_USD`; report CU + `PROXY_RESIDENTIAL_TRANSFER_GBYTES`. Never a paid CA dataset, never Unblocker, never a new proxy vendor.
 - City tie-break: use principal / mailing / agent city on the search row.
 
 **Verdict:** public bizfileOnline is the search tool. A hit with only an agent name is `agent_only` until SI officers parse.
@@ -156,7 +156,7 @@ Official SOS page: [Business Entities Records Request](https://www.sos.ca.gov/bu
 
 - Returns **officers / managers / at least one member** (not beneficial owners, not shareholders).
 - No API field for this. Phase 2: after entity-number match, fetch the SI image or the HTML entity record that lists officers.
-- `bizfileOnline` is a JS app behind **Incapsula/Imperva**. Statement of Information images are `GET https://bizfileonline.sos.ca.gov/api/report/GetImageByNum/{documentId}` (document id, not file number). History JSON supplies `DOCUMENT_ID`. Direct HTTP first; **Apify Playwright + residential, then OCR on PDF/image bytes**, if Incapsula blocks. Never a paid CA dataset. There is a paid “master” bulk product (~$100 in help-guide citations); **do not buy it**.
+- `bizfileOnline` is a JS app behind **Incapsula/Imperva**. Statement of Information images are `GET https://bizfileonline.sos.ca.gov/api/report/GetImageByNum/{documentId}` (document id, not file number). History JSON supplies `DOCUMENT_ID`. Direct HTTP first; **Apify Playwright + residential, then OCR on PDF/image bytes**, if Incapsula blocks. The batched CA actor fetches the PDF in the same browser session (verified: SI PDFs return extractable officer-table text; `apify/web-fetch` is an allowed alternative for a single PDF URL, not a second proxy vendor). Never a paid CA dataset. There is a paid “master” bulk product (~$100 in help-guide citations); **do not buy it**.
 
 ### 5.4 CA weekly bulk (optional, still official)
 
@@ -336,7 +336,7 @@ Extract person + title from organic snippets with **case-sensitive 2–3 capital
 
 ## 8.1 Apify policy and cost
 
-**Allowed:** `apify/playwright-scraper` (or `apify/web-scraper`) as pay-per-**usage** HTML fetch, `groups-RESIDENTIAL`, media download off, `maxConcurrency` 2–5, **batched startUrls per Actor run** (not one run per lookup). `waitForFinish=60` then poll the run until SUCCEEDED/FAILED. Hard cap `APIFY_MAX_USD` — refuse new runs at the cap. Refused / never-started / failed-with-no-usage runs are **$0**. Reuse existing `APIFY_PROXY_PASSWORD`.
+**Allowed:** `apify/playwright-scraper` (or `apify/web-scraper`) as pay-per-**usage** HTML fetch, `groups-RESIDENTIAL`, media download off, `maxConcurrency` 2–5, **batched startUrls per Actor run** (not one run per lookup). CA official path: **one startUrl** with `userData.companies` (hundreds per run, sticky `UNTIL_FAILURE`). `waitForFinish=60` then poll the run until SUCCEEDED/FAILED (CA batch poll up to 45 min). Hard cap `APIFY_MAX_USD` — refuse new runs at the cap. Refused / never-started / failed-with-no-usage runs are **$0**. Reuse existing `APIFY_PROXY_PASSWORD`. Report `ACTOR_COMPUTE_UNITS` and `PROXY_RESIDENTIAL_TRANSFER_GBYTES` per run. `apify/web-fetch` may pull a same-session SI PDF URL; do not add Bright Data / Oxylabs / other proxy vendors.
 
 **Forbidden:** Store Actors that sell officer lists; Unblocker / captcha solvers; paid third-party SOS APIs.
 
@@ -435,7 +435,7 @@ Already in this repo (do not rotate unless `health` says missing): PermitStack, 
 
 ## 12. Phase 2 delivered in this PR (still no deploy / no writes)
 
-1. **CA** public bizfileOnline search (`POST /api/Records/businessSearch`) + SI officers from `GET /api/report/GetImageByNum/{documentId}`. Direct HTTP first; Apify Playwright + residential if Incapsula blocks; OCR on PDF/image SI. **No `CA_SOS_API_KEY`.** Never paid datasets.
+1. **CA** public bizfileOnline search (`POST /api/Records/businessSearch`) + SI officers from `GET /api/report/GetImageByNum/{documentId}`. Direct HTTP first; Apify Playwright + residential if Incapsula blocks; OCR on PDF/image SI. **Batched CA:** `lookup_business_owner(ca_batch=true)` / `scripts/owner_lookup_sample.ts --ca-batch` — one sticky Playwright session, checkpoint resume, `waterfall_ready` only with a confirmed entity. **No `CA_SOS_API_KEY`.** Never paid datasets.
 2. **IL** auto-download DTA zips from `ilsos.gov/data/bs` (or `IL_DTA_DIR`). Empty index → `no_source`. Search UI is never called.
 3. **GA / NC** official HTML, Apify fallback if blocked. Challenge pages are never parsed.
 4. **AZ** Business Center JSON API via browser/Apify; empty SPA shell is not a match.
@@ -444,6 +444,25 @@ Already in this repo (do not rotate unless `health` says missing): PermitStack, 
 7. CLI `scripts/owner_lookup_sample.ts` — CSV in, results CSV + summary JSON (hit rate by state, officer vs agent-only, Serper credits, Apify $). No Supabase.
 8. **Serper-first** for all 51 jurisdictions (`SERPER_API_KEY`). High-confidence Google hits skip SOS/Apify. Apify only after a Serper miss on blocked HTML.
 9. Unit tests + recorded Cloudflare/Incapsula fixtures. Permit path (`match_state_owners` / CSLB license) stays green.
+
+### 50-company CA batched probe
+
+One sticky Playwright session (Apify `groups-RESIDENTIAL` only). Skips Serper for these rows. Estimate ~$0.19 (`0.04 + 50×0.003`) plus actual CU + residential GB. Set `APIFY_MAX_USD` so a runaway run cannot exceed the cap. Checkpoint resumes if the actor dies mid-batch.
+
+```bash
+export APIFY_TOKEN=...          # existing Apify token
+export APIFY_MAX_USD=5          # hard cap
+# CSV columns: company, city, state  (50 CA rows)
+npx tsx scripts/owner_lookup_sample.ts \
+  --in ca-50.csv \
+  --out ca-50-results.csv \
+  --ca-batch \
+  --states CA \
+  --no-serper \
+  --checkpoint /tmp/ca-batch-50.json
+```
+
+Same path via MCP: `lookup_business_owner({ ca_batch: true, wait: true, rows: [...50 CA companies...] })`. Poll `get_business_owner_job`. Summary fields: `named`, `apify_usd_spent`, `apify_compute_units`, `apify_proxy_gb`. Officers are `waterfall_ready` only when `entity_id` is set. Do not dump names in chat.
 
 Still later (not this PR): persist to Email Finder; `source_table` paging; remaining HAVE adapters (FL/TX/MA/PA/NY/WA/MN); optional `match_state_owners` fallback when `no_license_number`.
 
