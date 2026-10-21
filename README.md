@@ -126,3 +126,7 @@ npm start
 - `institutional` — drop from private-operator outreach
 - `municipal` — city / county / ISD / housing authority / etc. (segmentable)
 - `unknown` — residual
+
+## General business-owner lookup lives elsewhere
+
+The US small-business owner / officer lookup (any industry, any state, SOS + Serper + LLC unmasking) is its own service in [business-owners](https://github.com/joshuaosborn561-lang/business-owners). This repo keeps only the permit, parcel, and license-board owner matching that the Permits MCP tools use. Do not add a general owner lookup back here.
