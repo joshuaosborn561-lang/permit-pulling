@@ -1,6 +1,6 @@
 import { getSetting, loadAppSettings } from './appSettings.js';
 
-export const VERIPHONE_USD_PER_LOOKUP = 0.0024;
+export const VERIPHONE_USD_PER_LOOKUP = 0.024; // mode=current = 10 credits per lookup
 
 /** 10-digit NANP (optional leading 1). Empty / extensions-only / junk → null. */
 export function nanpDigits(phone: string): string | null {
@@ -43,6 +43,8 @@ export async function lookupVeriphone(phone: string): Promise<VeriphoneLookup> {
   const url = new URL('https://api.veriphone.io/v2/verify');
   url.searchParams.set('key', key);
   url.searchParams.set('phone', digits.length === 10 ? `+1${digits}` : phone);
+  // Live porting-registry line type (10 credits/lookup).
+  url.searchParams.set('mode', 'current');
   const res = await fetch(url, { headers: { Accept: 'application/json' } });
   const body = (await res.json().catch(() => null)) as {
     status?: string;
@@ -75,6 +77,6 @@ export function estimateVeriphoneUsd(n: number): { lookups: number; usd: number;
   return {
     lookups: n,
     usd: Math.round(n * VERIPHONE_USD_PER_LOOKUP * 100) / 100,
-    note: 'Veriphone Standard list price ~$2.40 per 1,000. Confirm before running lookup_line_type.',
+    note: 'Veriphone mode=current (live porting registry) = 10 credits/lookup, ~$24 per 1,000 at Standard list price. Confirm before running lookup_line_type.',
   };
 }
