@@ -66,7 +66,7 @@ Goal: dial **owner cells**, not office/main/license lines.
 1. \`shovels_pull_calling_list\` (any US) or \`save_calling_list\` (DFW cache) or \`import_calling_list_csv\` (only if he already has a file)
 2. \`score_calling_list\` (free). Default \`only_unscored=true\` — re-run until \`remaining_unscored=0\`. Limit up to 8,000.
 3. \`match_state_owners(list_id, dry_run=true, max_rows=100)\` first, then without dry_run. Per-state tools stay callable. Texas Comptroller still: \`match_texas_officers(only_unmatched=true, limit=80)\`. Florida Sunbiz still: \`match_florida_officers(only_unmatched=true, limit=40)\`. Tool replies are counts / job ids / nameless samples only.
-4. \`lookup_line_type\` — Veriphone Standard ~$2.40/1k. Show the $ estimate, then \`confirm=true\`. Default limit 50. Re-run \`only_unknown=true\` and **omit offset**. Invalid/non-NANP phones are marked \`invalid\` so the queue drains.
+4. \`lookup_line_type\` — Veriphone mode=current ~$24/1k (10 credits/lookup). Show the $ estimate, then \`confirm=true\`. Default limit 50. Re-run \`only_unknown=true\` and **omit offset**. Invalid/non-NANP phones are marked \`invalid\` so the queue drains.
 5. \`query_calling_list(dial_status=owner_cell)\` after line type for **match/resolved+mobile**. Verified mobiles with no owner identity are \`mobile_unverified_owner\` (including \`agent\`). Genuine person-name conflicts stay \`different\` but remain dialable. \`owner_people_search\` only if you still need a different number. Take **wireless** only if the address matches. \`record_owner_cell\`
 6. Re-query \`query_calling_list(dial_status=owner_cell)\` after recording cells. \`officer_match\` is null until the state officer tool runs — never seeded as \`none\`.
 
@@ -110,7 +110,7 @@ Call \`permitstack_estimate_credits\` (alias \`shovels_estimate_credits\`, or \`
 | match_florida_officers | No | Sunbiz officers (FL entities; optional key if Cloudflare blocks) |
 | match_state_owners | No | State board owners (CSLB, L&I, NYC DOB, NY DOS, MA CSL+SOS, MN DLI, PA DOS, TDLR). Counts only. |
 | recompute_officer_dial_status | No | Restore dial_status from stored officers (no registry calls) |
-| lookup_line_type | ~$2.40/1k | Veriphone mobile vs landline |
+| lookup_line_type | ~$24/1k | Veriphone live line type (mode=current) |
 | owner_people_search | No | Google / people-search URLs |
 | record_owner_cell | No | Save a confirmed wireless |
 | parcels_* | No | CAD parcels |

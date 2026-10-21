@@ -1243,7 +1243,7 @@ WHAT IT DOES: Reads stored officer_name / officer_match and rewrites dial_status
     {
       title: 'Veriphone line type (cell vs landline)',
       description: `WHEN TO USE: After scoring + officers, to mark Shovels phones as mobile/landline/voip.
-COST: ~$2.40 per 1,000 (Veriphone Standard). First call without confirm=true returns the $ estimate only.
+COST: ~$24 per 1,000 (Veriphone mode=current, 10 credits/lookup). First call without confirm=true returns the $ estimate only.
 RULES: Show the estimate. confirm=true to spend. Default cap 50. only_unknown=true (default) resumes — omit offset. Non-NANP phones are marked invalid (no spend) so the queue drains. match+mobile sets dial_status=owner_cell; verified mobile with no officer source sets mobile_unverified_owner. Never echo the API key.`,
       inputSchema: {
         list_id: z.string().min(1),
