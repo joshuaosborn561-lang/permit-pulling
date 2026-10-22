@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "allo-dialing-queues": {
+      "command": "python3",
+      "args": ["REPLACE_WITH_ABSOLUTE_PATH/allo_dialing_queues_mcp.py"],
+      "env": {
+        "ALLO_API_KEY": "PASTE_ALLO_API_KEY"
+      }
+    }
+  }
+}
